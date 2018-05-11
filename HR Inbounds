@@ -1,0 +1,1939 @@
+*&---------------------------------------------------------------------*
+*&      Form  READ_DATA_FROM_APP_SERVER
+*&---------------------------------------------------------------------*
+*       Read data from application server
+*----------------------------------------------------------------------*
+FORM  read_data_from_app_server TABLES pt_zzzz pt_2002 pt_0573
+                                       pt_0015 pt_2013
+                                       pt_2012 pt_salfldir
+                               USING pv_path.
+  CONSTANTS :
+    lc_sign      TYPE sign           VALUE 'I',
+    lc_option    TYPE option         VALUE 'CP',
+    lc_low       TYPE c LENGTH 5     VALUE 'SNSW*',
+    lv_seperator TYPE c              VALUE '/',
+    lc_star      TYPE epsf-epsfilnam VALUE '*'.
+
+  DATA: lt_str        TYPE RANGE OF epsfilnam,
+        ls_str        LIKE LINE OF lt_str,
+        lv_separator  TYPE c VALUE '|',
+        lv_length     TYPE i,
+        lv_temp_anzhl TYPE c LENGTH 10,
+        lv_2013_accnu TYPE c LENGTH 15,
+        lv_2002_stdaz TYPE c LENGTH 10,
+        lt_file       TYPE STANDARD TABLE OF tab512,
+        ls_salfldir   TYPE epsfili,
+        ls_file       TYPE tab512,
+        lv_string     TYPE string,
+        ls_zzzz       TYPE gty_zzzz,
+        ls_2002       TYPE gty_2002,
+        ls_0573       TYPE gty_0573,
+        ls_0015       TYPE gty_0015,
+        ls_2012       TYPE gty_2012,
+        ls_9000       TYPE gty_9000,
+        lv_2012_anzhl TYPE c LENGTH 10,
+        ls_2013       TYPE gty_2013,
+        lv_error      TYPE string.
+
+  CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+  CALL FUNCTION 'EPS_GET_DIRECTORY_LISTING'
+    EXPORTING
+      dir_name               = CONV epsdirnam( pv_path )
+      file_mask              = lc_star
+    TABLES
+      dir_list               = pt_salfldir
+    EXCEPTIONS
+      invalid_eps_subdir     = 1
+      sapgparam_failed       = 2
+      build_directory_failed = 3
+      no_authorization       = 4
+      read_directory_failed  = 5
+      too_many_read_errors   = 6
+      empty_directory_list   = 7
+      OTHERS                 = 8.
+  IF sy-subrc = 0.
+    ls_str-sign   = lc_sign.
+    ls_str-option = lc_option.
+    ls_str-low    = lc_low .
+    APPEND ls_str TO lt_str.
+    DELETE pt_salfldir WHERE ('NAME NOT IN LT_STR') .
+  ENDIF.
+
+  lv_length = strlen( p_path ).
+  lv_length = lv_length - 1 .
+  IF p_path+lv_length(1) NE lv_seperator.
+    p_path = p_path && lv_seperator.
+  ENDIF.
+
+  LOOP AT pt_salfldir INTO ls_salfldir.
+    CLEAR : gv_stripped_name, gv_app_file_path,ls_file.
+    REFRESH lt_file .
+
+    PERFORM split_file USING ls_salfldir-name
+                       CHANGING gv_stripped_name.
+
+    gv_app_file_path = p_path  && ls_salfldir-name.
+
+*    read the input file
+    OPEN DATASET gv_app_file_path FOR INPUT IN TEXT  MODE ENCODING DEFAULT.
+    IF sy-subrc = 0.
+      DO.
+        READ DATASET gv_app_file_path INTO ls_file.
+        IF sy-subrc <> 0.
+          EXIT.
+        ENDIF.
+        APPEND ls_file TO lt_file.
+        CLEAR ls_file.
+      ENDDO.
+      CLOSE DATASET gv_app_file_path.
+
+      CHECK lt_file IS NOT INITIAL.
+
+      CASE gv_stripped_name.
+        WHEN gc_zzzz .
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_zzzz .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              SPLIT lv_string AT lv_separator INTO ls_zzzz-field1 ls_zzzz-pernr
+                                                   ls_zzzz-infty
+                                                   ls_zzzz-begda.
+              CHECK ls_zzzz-field1 EQ gc_zzzz .
+              APPEND ls_zzzz TO gt_zzzz.
+              CLEAR ls_file .
+            ENDIF.
+          ENDLOOP.
+
+        WHEN gc_2002.
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_2002 .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              SPLIT lv_string AT lv_separator INTO ls_2002-infty ls_2002-pernr ls_2002-awart
+                                                   ls_2002-begda lv_2002_stdaz ls_2002-kostl.
+              CHECK ls_2002-infty EQ gc_2002.
+              ls_2002-stdaz = lv_2002_stdaz .
+              APPEND ls_2002 TO gt_2002.
+              CLEAR ls_file .
+            ENDIF.
+          ENDLOOP.
+
+        WHEN gc_0573 .
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_0573 .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              SPLIT lv_string AT lv_separator INTO ls_0573-infty     ls_0573-pernr
+                                                   ls_0573-lcode     ls_0573-begda
+                                                   ls_0573-fphrs     ls_0573-kostl
+                                                   ls_0573-zzslreacd ls_0573-advnc
+                                                   ls_0573-halfp     ls_0573-beguz
+                                                   ls_0573-enduz     ls_0573-load1 .
+              CHECK ls_0573-infty EQ gc_0573.
+              PERFORM convert_data_to_sap_format CHANGING ls_0573-advnc .
+              PERFORM convert_data_to_sap_format CHANGING ls_0573-load1 .
+              PERFORM convert_halfpay_to_sap_format CHANGING ls_0573-halfp .
+
+
+              REPLACE ALL OCCURRENCES OF ':' IN ls_0573-beguz WITH abap_false.
+              CONDENSE ls_0573-beguz NO-GAPS .
+              REPLACE ALL OCCURRENCES OF ':' IN ls_0573-enduz WITH abap_false.
+              CONDENSE ls_0573-enduz NO-GAPS .
+              APPEND ls_0573 TO gt_0573.
+              CLEAR ls_file .
+
+            ENDIF.
+          ENDLOOP.
+
+        WHEN gc_0015.
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_0015 .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              CLEAR lv_temp_anzhl.
+              SPLIT lv_string AT lv_separator INTO ls_0015-infty ls_0015-pernr
+                                                   ls_0015-lgart ls_0015-begda
+                                                   lv_temp_anzhl ls_0015-kostl.
+              CHECK ls_0015-infty EQ gc_0015.
+              ls_0015-anzhl = lv_temp_anzhl.
+              APPEND ls_0015 TO gt_0015.
+              CLEAR ls_file .
+            ENDIF.
+          ENDLOOP.
+
+        WHEN gc_2013.
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_2013 .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              CLEAR lv_2013_accnu.
+              SPLIT lv_string AT lv_separator INTO ls_2013-infty ls_2013-pernr  ls_2013-ktart
+                                                   ls_2013-begda lv_2013_accnu.
+              CHECK ls_2013-infty EQ gc_2013.
+              ls_2013-accnu = lv_2013_accnu.
+              APPEND ls_2013 TO gt_2013.
+              CLEAR ls_file .
+            ENDIF.
+          ENDLOOP.
+
+        WHEN gc_2012.
+          CLEAR: ls_file.
+          LOOP AT lt_file INTO ls_file.
+            CLEAR : lv_string,ls_2012 .
+            lv_string = ls_file.
+            SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+            SHIFT lv_string LEFT DELETING LEADING space.
+            IF lv_string IS NOT INITIAL.
+              CLEAR:lv_2012_anzhl.
+              SPLIT lv_string AT lv_separator INTO ls_2012-infty ls_2012-pernr ls_2012-subty
+                                                   ls_2012-begda ls_2012-endda lv_2012_anzhl.
+              CHECK ls_2012-infty EQ gc_2012.
+              ls_2012-anzhl = lv_2012_anzhl.
+              APPEND ls_2012 TO gt_2012.
+              CLEAR ls_file .
+            ENDIF.
+          ENDLOOP.
+      ENDCASE.
+    ELSE.
+      CONCATENATE text-e01 ls_salfldir-name
+             INTO lv_error SEPARATED BY space.
+      MESSAGE lv_error TYPE 'E'.
+    ENDIF.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  LOAD_DATA_FROM_PRE_SERVER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_GT_XXXX  text
+*      -->P_P_PXXXX  text
+*----------------------------------------------------------------------*
+FORM load_data_from_pre_server  TABLES   pt_xxxx TYPE STANDARD TABLE
+                                USING    pv_file.
+
+  CALL FUNCTION 'GUI_UPLOAD' "Upload for Data Provider
+    EXPORTING
+      filename                = pv_file
+      filetype                = 'ASC'
+      has_field_separator     = abap_true
+*     HEADER_LENGTH           = 0
+*     READ_BY_LINE            = abap_true
+*     DAT_MODE                = ' '
+*     CODEPAGE                = ' '
+*     IGNORE_CERR             = ABAP_TRUE
+*     REPLACEMENT             = '#'
+*     CHECK_BOM               = ' '
+*     VIRUS_SCAN_PROFILE      =
+*     NO_AUTH_CHECK           = ' '
+*   IMPORTING
+*     FILELENGTH              =
+*     HEADER                  =
+    TABLES
+      data_tab                = pt_xxxx
+*   CHANGING
+*     ISSCANPERFORMED         = ' '
+    EXCEPTIONS
+      file_open_error         = 1
+      file_read_error         = 2
+      no_batch                = 3
+      gui_refuse_filetransfer = 4
+      invalid_type            = 5
+      no_authority            = 6
+      unknown_error           = 7
+      bad_data_format         = 8
+      header_not_allowed      = 9
+      separator_not_allowed   = 10
+      header_too_long         = 11
+      unknown_dp_error        = 12
+      access_denied           = 13
+      dp_out_of_memory        = 14
+      disk_full               = 15
+      dp_timeout              = 16
+      OTHERS                  = 17.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+           WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  LOAD_DATA_FROM_APP_SERVER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_GT_HEADER  text
+*      -->P_P_HEADER  text
+*----------------------------------------------------------------------*
+FORM load_data_from_app_server  TABLES   pt_xxxx
+                                USING    pv_file.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  SPLIT_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_<FS_SALFLDIR>_NAME  text
+*      <--P_STRIPPED_NAME  text
+*----------------------------------------------------------------------*
+FORM split_file  USING    p_full_name
+                 CHANGING p_stripped_name.
+
+  CONSTANTS :
+    lc_underscore TYPE c VALUE '_',
+    lv_dot        TYPE c VALUE '.'.
+*& dirlen : directoy lenght
+  DATA :lv_dirlen      LIKE sy-fdpos,
+        lv_full_name   TYPE string,
+        lv_file_path   TYPE string,
+        lv_split_temp  TYPE   localfile,
+        lv_split_temp1 TYPE   localfile.
+
+*& get the   dirlen
+  lv_dirlen = strlen( p_full_name ) - 1.
+
+  WHILE lv_dirlen > 0.
+    IF p_full_name+lv_dirlen(1) = lc_underscore.
+      EXIT.
+    ENDIF.
+    lv_dirlen = lv_dirlen - 1.
+  ENDWHILE.
+
+*& get directory and filename .
+  IF lv_dirlen > 0.
+*& path include '_'
+    lv_dirlen = lv_dirlen + 1.
+    lv_file_path     = p_full_name(lv_dirlen). "no offset: first part.
+*&  filename
+    lv_split_temp = p_full_name+lv_dirlen. "offset without lange: rest
+  ELSE.
+    lv_split_temp = p_full_name.
+  ENDIF.
+
+  SPLIT lv_split_temp AT lv_dot INTO p_stripped_name lv_split_temp1  .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  PROCESS_DATA
+*&---------------------------------------------------------------------*
+*       Update/Delete infotypes based on the input files
+*----------------------------------------------------------------------*
+FORM process_data  TABLES   pt_zzzz
+                            pt_2002
+                            pt_0573
+                            pt_0015
+                            pt_2013
+                            pt_2012.
+
+  DATA :
+    ls_ret_enque TYPE bapireturn1,
+    lv_infty     TYPE prelp-infty,
+    lv_operation TYPE pspar-actio,
+    lv_objps     TYPE p0001-objps,
+    ls_0573      TYPE gty_0573,
+    ls_0015      TYPE gty_0015,
+    ls_2013      TYPE gty_2013,
+    ls_p0573     TYPE p0573,
+    ls_p0015     TYPE p0015,
+    ls_p2013     TYPE p2013,
+    lv_record  .
+
+* ------- Process ZZZZ file data, for Deleting Records --------*
+
+  IF pt_zzzz[] IS NOT INITIAL .
+    CLEAR : lv_infty, lv_operation ,ls_ret_enque.
+    lv_operation = gc_del.  " For Deleting Records
+    PERFORM del_inftype_xxxx_data TABLES pt_zzzz
+                                   USING lv_operation
+                                         ls_ret_enque.
+  ENDIF.
+
+  lv_operation = gc_ins .       " For Creating a Records
+* -------------- Process 2002 file data --------------*
+
+  IF pt_2002[]  IS NOT INITIAL.
+    CLEAR : lv_infty, ls_ret_enque .
+    lv_infty  = gc_2002 .
+    PERFORM infotype_2002_data TABLES pt_2002
+                               USING lv_infty
+                                     lv_operation
+                                     ls_ret_enque .
+  ENDIF.
+
+* -------------- Process 0573 file data --------------*
+  IF pt_0573[] IS NOT INITIAL .
+    CLEAR : lv_infty ,ls_ret_enque .
+    lv_infty  = gc_0573 .
+    PERFORM infotype_0573_data TABLES pt_0573
+                               USING lv_infty
+                                     lv_operation
+                                     ls_ret_enque.
+  ENDIF.
+* -------------- Process 2013 file data --------------*
+  IF pt_0015[] IS NOT INITIAL.
+    CLEAR : lv_infty ,ls_ret_enque .
+    lv_infty  = gc_0015 .
+    PERFORM infotype_0015_data TABLES pt_0015
+                               USING  lv_infty
+                                      lv_operation
+                                      ls_ret_enque.
+  ENDIF.
+
+* -------------- Process 2013 file data --------------*
+  IF pt_2013[] IS NOT INITIAL.
+    CLEAR : lv_infty ,ls_ret_enque .
+    lv_infty  = gc_2013.
+    PERFORM infotype_2013_data TABLES pt_2013
+                               USING  lv_infty
+                                      lv_operation
+                                      ls_ret_enque.
+  ENDIF.
+
+* -------------- Process 2012 file data --------------*
+  IF pt_2012[] IS NOT INITIAL.
+    CLEAR : lv_infty ,ls_ret_enque .
+    lv_infty  = gc_2012.
+    PERFORM infotype_2012_data TABLES pt_2012
+                               USING  lv_infty
+                                      lv_operation
+                                      ls_ret_enque.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  EMPLOYEE_ENQUEQU
+*&---------------------------------------------------------------------*
+*       Lock the employee for processing
+*----------------------------------------------------------------------*
+FORM employee_enquequ  USING    pv_pernr pv_infty  pv_subty
+                       CHANGING ps_ret_enque  TYPE bapireturn1.
+  CLEAR ps_ret_enque .
+  CALL FUNCTION 'BAPI_EMPLOYEE_ENQUEUE'
+    EXPORTING
+      number = pv_pernr
+    IMPORTING
+      return = ps_ret_enque.
+
+  IF ps_ret_enque IS NOT INITIAL .
+    APPEND  VALUE #(
+                   operation   = ''
+                   pernr       = pv_pernr
+                   infty       = pv_infty
+                   subty       = pv_subty
+                   date        = sy-datum
+                   msgty       = ps_ret_enque-type
+                   msgno       = ps_ret_enque-number
+                   message     = ps_ret_enque-message
+                    )  TO gt_error_log .
+
+    APPEND LINES OF gt_error_log[] TO gt_final_error[].
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  MODIFY_INFOTYPE_DATA
+*&---------------------------------------------------------------------*
+*       Modify Infotype Data
+*----------------------------------------------------------------------*
+FORM modify_infotype_data  USING    pv_infty
+                                    pv_pernr
+                                    pv_subty
+                                    pv_seqnr
+                                    pv_record
+                                    pv_begda
+                                    pv_operation.
+
+  DATA : ls_bapireturn1 TYPE bapireturn1.
+
+  REFRESH gt_error_log[].
+
+** Update the Infotype
+  CALL FUNCTION 'HR_INFOTYPE_OPERATION'
+    EXPORTING
+      infty         = pv_infty
+      number        = pv_pernr
+      subtype       = pv_subty
+      validityend   = pv_begda
+      validitybegin = pv_begda
+      recordnumber  = pv_seqnr
+      record        = pv_record
+      operation     = pv_operation
+      nocommit      = space
+    IMPORTING
+      return        = ls_bapireturn1.
+
+  IF ls_bapireturn1 IS NOT INITIAL .
+    APPEND  VALUE #(
+                     operation   = pv_operation
+                     pernr       = pv_pernr
+                     infty       = pv_infty
+                     subty       = pv_subty
+                     date        = pv_begda
+                     msgty       = ls_bapireturn1-type
+                     msgno       = ls_bapireturn1-number
+                     message     = ls_bapireturn1-message
+                    )  TO gt_error_log .
+
+    IF pv_infty NE '2003'.
+      APPEND LINES OF gt_error_log[] TO gt_final_error[].
+    ENDIF.
+
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  EMPLOYEE_DEQUEUE
+*&---------------------------------------------------------------------*
+*       Unlock the emoployee after processing
+*----------------------------------------------------------------------*
+FORM employee_dequeue  USING    pv_pernr.
+
+  CALL FUNCTION 'BAPI_EMPLOYEE_DEQUEUE'
+    EXPORTING
+      number = pv_pernr.
+
+  COMMIT WORK.
+
+  WAIT UP TO 1 SECONDS.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INFOTYPE_2002_DATA
+*&---------------------------------------------------------------------*
+*       Update infotype 2002 based on the input file.
+*----------------------------------------------------------------------*
+FORM infotype_2002_data  TABLES   pt_2002
+                         USING    pv_infty
+                                  pv_operation
+                                  ps_ret_enque .
+
+  DATA : ls_2002         TYPE gty_2002,
+         lv_next_number  TYPE asshr-pdsnr,
+         ls_header_assob TYPE assob,
+         ls_asshr        TYPE asshr,
+         ls_pdsnr        TYPE pdsnr,
+         ls_return       TYPE bapiret2,
+         ls_hrabsatt_in  TYPE bapihrabsatt_in,
+         ls_hrcostassign TYPE bapihrcostassign,
+         lt_return       TYPE TABLE OF bapiret2.
+
+** Constants
+  DATA: lc_wsr           TYPE char8     VALUE '168H/M-S'.
+
+  CLEAR: ls_2002.
+  LOOP AT pt_2002 INTO ls_2002 .
+
+    ls_2002-kostl = |{ ls_2002-kostl  ALPHA = IN }|.
+    ls_2002-pernr = |{ ls_2002-pernr  ALPHA = IN }|.
+
+*   Update Cost Center field Data
+    REFRESH lt_return.
+    CLEAR : ls_hrabsatt_in, ls_hrcostassign, ls_return.
+
+    ls_hrabsatt_in   = VALUE #( LET date = ls_2002-begda+6(4) && ls_2002-begda+3(2) && ls_2002-begda+0(2)
+                            IN  from_date     =  date
+                                to_date       =  date
+                                abs_att_hours =  ls_2002-stdaz  ).
+
+    IF NOT ls_2002-kostl IS INITIAL.
+      ls_hrcostassign = VALUE #( comp_code = '2495'
+                                 costcenter = ls_2002-kostl      ).
+    ENDIF.
+
+*  Lock the PERNR before processing.
+    PERFORM employee_enquequ USING    ls_2002-pernr pv_infty ls_2002-awart
+                             CHANGING ps_ret_enque.
+    IF ps_ret_enque IS INITIAL.
+*Note : The below FM is used form over time Webdynpro applicaiton,
+*       if you want to make changes to it, Please do not touch the
+*       original FM instead you can copy this and create a new FM.
+      CALL FUNCTION 'ZBAPI_PTMGRATTABS_MNGCREATION'
+        EXPORTING
+          employeenumber = ls_2002-pernr
+          abs_att_type   = ls_2002-awart
+          hrabsatt_in    = ls_hrabsatt_in
+          lockindicator  = abap_false
+          hrcostassign   = ls_hrcostassign
+        TABLES
+          return         = lt_return.
+
+      CLEAR: ls_return.
+      LOOP AT lt_return INTO  ls_return WHERE type = 'E'.
+        APPEND VALUE #(
+                    operation   = pv_operation
+                    pernr       = ls_2002-pernr
+                    infty       = pv_infty
+                    subty       = ls_2002-awart
+                    date        = ls_2002-begda
+                    msgty       = ls_return-type
+                    msgno       = ls_return-number
+                    message     = ls_return-message
+                       )  TO gt_error_log .
+
+        APPEND LINES OF gt_error_log[] TO gt_final_error[].
+
+        CLEAR ls_return .
+      ENDLOOP .
+
+      LOOP AT lt_return INTO  ls_return WHERE type = 'I'.
+        CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+      ENDLOOP .
+    ENDIF.
+
+    PERFORM employee_dequeue USING ls_2002-pernr .
+
+    CLEAR :  ls_2002, ls_hrabsatt_in,
+             ls_hrcostassign.
+    REFRESH: lt_return.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DEL_INFTYPE_XXXX_DATA
+*&---------------------------------------------------------------------*
+*       Deletion of data from infotypes from ZZZZ file.
+*----------------------------------------------------------------------*
+FORM del_inftype_xxxx_data  TABLES   pt_zzzz
+                            USING    pv_operation
+                                     ps_ret_enque.
+
+  TYPES:BEGIN OF ty_line,
+          pernr TYPE persno,
+          infty TYPE infty,
+          subty TYPE subty,
+          objps TYPE objps,
+          sprps TYPE sprps,
+          begda TYPE begda,
+          endda TYPE endda,
+          seqnr TYPE seqnr,
+        END OF ty_line.
+
+  FIELD-SYMBOLS :
+    <fs_record>   TYPE any,
+    <fs_record_o> TYPE any,
+    <fs_subty>    TYPE subty,
+    <fs_begda>    TYPE begda,
+    <fs_endda>    TYPE begda,
+    <fs_pernr>    TYPE p0001-pernr,
+    <fs_infty>    TYPE prelp-infty,
+    <fs_records>  TYPE STANDARD TABLE.
+
+  DATA: ls_dyn_line_2002 TYPE REF TO data,
+        ls_dyn_line_0573 TYPE REF TO data,
+        ls_dyn_line_0015 TYPE REF TO data,
+        ls_dyn_line_2001 TYPE REF TO data,
+        ls_dyn_line_2013 TYPE REF TO data,
+        ls_ret_enque     TYPE bapireturn1,
+        ls_zzzz          TYPE gty_zzzz,
+        lt_2002          TYPE TABLE OF p2002,
+        lt_0573          TYPE TABLE OF p0573,
+        lt_0015          TYPE TABLE OF p0015,
+        lt_2013          TYPE TABLE OF p2013,
+        ls_line          TYPE ty_line,
+        ls_dyn_line_2012 TYPE REF TO data,
+        ls_dyn_line_9000 TYPE REF TO data,
+        lt_2012          TYPE TABLE OF p2012,
+        lt_9000          TYPE TABLE OF p9000.
+
+  CLEAR: ls_zzzz.
+  LOOP AT pt_zzzz INTO ls_zzzz.
+    UNASSIGN : <fs_infty>,<fs_pernr>,<fs_subty>,<fs_begda>,<fs_endda>.
+
+    ls_zzzz-infty = |{ ls_zzzz-infty ALPHA = IN }|.
+
+    CASE ls_zzzz-infty.
+      WHEN '2002'.
+        CREATE DATA ls_dyn_line_2002 TYPE p2002.
+        ASSIGN ls_dyn_line_2002->* TO <fs_record_o>.
+        ASSIGN lt_2002 TO <fs_records>.
+      WHEN '0573'.
+        CREATE DATA ls_dyn_line_0573 TYPE p0573.
+        ASSIGN ls_dyn_line_0573->* TO <fs_record_o>.
+        ASSIGN lt_0573 TO <fs_records>.
+        ls_zzzz-subty = |{ ls_zzzz-subty ALPHA = IN }|.
+      WHEN '0015'.
+        CREATE DATA ls_dyn_line_0015 TYPE p0015.
+        ASSIGN ls_dyn_line_0015->* TO <fs_record_o>.
+        ASSIGN lt_0015 TO <fs_records>.
+      WHEN '2013'.
+        CREATE DATA ls_dyn_line_2013 TYPE p2013.
+        ASSIGN ls_dyn_line_2013->* TO <fs_record_o>.
+        ASSIGN lt_2013 TO <fs_records>.
+      WHEN '2012'.
+        CREATE DATA ls_dyn_line_2012 TYPE p2012.
+        ASSIGN ls_dyn_line_2012->* TO <fs_record_o>.
+        ASSIGN lt_2012 TO <fs_records>.
+      WHEN OTHERS.
+    ENDCASE.
+
+    IF <fs_record_o> IS ASSIGNED .
+      ASSIGN COMPONENT 'PERNR' OF STRUCTURE <fs_record_o> TO <fs_pernr>.
+      <fs_pernr> = |{ ls_zzzz-pernr ALPHA =  IN }|.
+
+      ASSIGN COMPONENT 'INFTY' OF STRUCTURE <fs_record_o> TO <fs_infty>.
+      <fs_infty> =  ls_zzzz-infty .
+
+      ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+      <fs_subty> = ls_zzzz-subty .
+
+      ASSIGN COMPONENT 'BEGDA' OF STRUCTURE <fs_record_o> TO <fs_begda>.
+      <fs_begda> = ls_zzzz-begda+6(4) && ls_zzzz-begda+3(2) && ls_zzzz-begda+0(2).
+
+      ASSIGN COMPONENT 'ENDDA' OF STRUCTURE <fs_record_o> TO <fs_endda>.
+      <fs_endda> = <fs_begda>.
+
+*Read the records
+      PERFORM read_records USING <fs_pernr> <fs_infty> <fs_begda>
+                           CHANGING <fs_records>.
+      IF <fs_records> IS NOT INITIAL.
+
+*  Lock the PERNR before processing.
+        PERFORM employee_enquequ USING <fs_pernr>  ls_zzzz-infty ls_zzzz-subty
+                                 CHANGING ps_ret_enque .
+
+        CLEAR ls_line.
+        LOOP AT <fs_records> INTO ls_line.
+
+          IF ps_ret_enque IS INITIAL.
+*  Fill Data/Infotype and Operation Details.
+            PERFORM modify_infotype_data USING <fs_infty>  <fs_pernr>
+                                               ls_line-subty ls_line-seqnr
+                                               <fs_record_o> <fs_begda>  pv_operation.
+
+*  code to delete the 2001 record
+            IF <fs_infty> = gc_0573 AND gt_error_log[] IS INITIAL.
+
+*  code to delete the 2003 record
+              PERFORM zdelete_infty_2003 USING <fs_pernr> ls_line-subty
+                                               <fs_begda> pv_operation.
+
+              PERFORM del_infotype_2001 USING <fs_pernr> ls_line-subty
+                                              <fs_begda> pv_operation.
+            ENDIF.
+
+          ENDIF.
+
+          CLEAR: ls_line.
+        ENDLOOP.
+
+        PERFORM employee_dequeue USING <fs_pernr> .
+      ENDIF.
+
+    ENDIF.
+
+    CLEAR ls_zzzz .
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INFOTYPE_0573_DATA
+*&---------------------------------------------------------------------*
+*       Uodate infotype 0573 based on the inbound file.
+*----------------------------------------------------------------------*
+FORM infotype_0573_data  TABLES   pt_0573
+                         USING    pv_infty
+                                  pv_operation
+                                  ps_ret_enque.
+
+  DATA : ls_0573  TYPE gty_0573,
+         ls_p0573 TYPE p0573,
+         lt_0007  TYPE TABLE OF p0007,
+         lw_0007  TYPE p0007.
+
+  CONSTANTS:lc_0800 TYPE pau_lcode VALUE '0800',
+            lc_0750 TYPE pau_lcode VALUE '0750',
+            lc_0830 TYPE pau_lcode VALUE '0830',
+            lc_0250 TYPE pau_lcode VALUE '0250',
+            lc_0860 TYPE pau_lcode VALUE '0860',
+            lc_0595 TYPE pau_lcode VALUE '0595',
+            lc_offf TYPE pau_lcode VALUE 'OFFF',
+            lc_wsr  TYPE char8     VALUE '168H/M-S',
+            lc_0560 TYPE pau_lcode VALUE '0560', "by rahulb DE5K912747 14/11/2017
+            lc_0760 TYPE pau_lcode VALUE '0760'. "by rahulb DE5K912747 14/11/2017
+
+  CLEAR: ls_0573.
+  LOOP AT pt_0573 INTO ls_0573 .
+
+*  Fill Data/Infotype and Operation Details.
+    ls_p0573 = VALUE #( LET date = ls_0573-begda+6(4) && ls_0573-begda+3(2) && ls_0573-begda+0(2)
+                    IN  pernr    =  |{ ls_0573-pernr ALPHA = IN }|
+                        lcode    = ls_0573-lcode
+                        begda    = date
+                        endda    = date
+                        zzslreacd = ls_0573-zzslreacd
+                        advnc    = ls_0573-advnc
+                        confh    = ls_0573-halfp
+                        beguz    = ls_0573-beguz
+                        enduz    = ls_0573-enduz
+                        load1    = ls_0573-load1
+                        ) .
+
+    CLEAR:gv_date.
+    CONCATENATE ls_0573-begda+6(4) ls_0573-begda+3(2) ls_0573-begda+0(2) INTO gv_date.
+    ls_p0573-infty = ls_0573-infty.
+    ls_p0573-subty = ls_0573-lcode.
+    gv_confh = ls_0573-halfp.
+
+** Fetch WSR for the employee - To check if an entry in 2003 is necessary
+    PERFORM read_records USING ls_p0573-pernr
+                               '0007'
+                               ls_p0573-begda
+                      CHANGING lt_0007.
+    CLEAR: lw_0007.
+    IF NOT lt_0007[] IS INITIAL.
+      READ TABLE lt_0007 INTO lw_0007 WITH KEY schkz = lc_wsr.
+    ENDIF.
+*  Lock the PERNR before processing.
+    PERFORM employee_enquequ USING    ls_p0573-pernr  pv_infty ls_0573-lcode
+                             CHANGING ps_ret_enque.
+    IF ps_ret_enque IS INITIAL .
+
+
+** If pay advance or leave loading is set as Y, update 2003
+      IF lw_0007-schkz EQ lc_wsr AND
+         ( ls_0573-advnc EQ 'X'      OR
+           ls_0573-load1 EQ 'X'      OR
+           ls_0573-lcode EQ lc_0800  OR
+           ls_0573-lcode EQ lc_0750  OR
+           ls_0573-lcode EQ lc_0830  OR
+           ls_0573-lcode EQ lc_0250  OR
+           ls_0573-lcode EQ lc_0860  OR
+           ls_0573-lcode EQ lc_0595  OR
+           ls_0573-lcode EQ lc_offf  OR
+           ls_0573-lcode EQ lc_0760  ).      "by rahulb DE5K912747 14/11/2017
+        PERFORM zupdate_infty_2003 USING ls_0573.
+      ENDIF.
+
+      IF ls_0573-lcode NE 'OFFF'.
+*        begin of changes by rahulb DE5K912747 14/11/2017
+*  conversion of 0760 leave code for 0573 infotype
+        IF ls_0573-lcode = lc_0760.
+          gv_0760 = lc_0760.
+          ls_0573-lcode  = lc_0750.
+          ls_p0573-subty = lc_0750.
+          ls_p0573-lcode = lc_0750.
+        ENDIF.
+*        end of changes by rahulb DE5K912747 14/11/2017
+        PERFORM modify_infotype_data USING pv_infty       ls_p0573-pernr
+                                          ls_0573-lcode  ls_0573-seqnr ls_p0573
+                                          ls_p0573-begda  pv_operation .
+
+        "if the 573 upload is successfull, upload the 2001 recs
+        IF gt_error_log[] IS INITIAL.
+          PERFORM update_2001 USING ls_0573.
+        ENDIF.
+
+**Update 573 for the below leave codes
+        IF ls_0573-lcode EQ lc_0800 OR
+           ls_0573-lcode EQ lc_0750 OR
+           ls_0573-lcode EQ lc_0830 OR
+           ls_0573-lcode EQ lc_0250 OR
+           ls_0573-lcode EQ lc_0860 OR
+           ls_0573-lcode EQ lc_0595 OR
+           ls_0573-lcode EQ lc_0560.   "by rahulb DE5K912747 14/11/2017
+          PERFORM zupdate_infty573.
+        ENDIF.
+      ENDIF.
+
+    ENDIF.
+
+** Unlock the employee
+    PERFORM employee_dequeue USING ls_0573-pernr .
+
+    CLEAR : ls_p0573, ls_0573, gv_0760 .
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INFOTYPE_0015_DATA
+*&---------------------------------------------------------------------*
+*       Update infotype 0015 based on inbound file
+*----------------------------------------------------------------------*
+FORM infotype_0015_data  TABLES   pt_0015
+                         USING    pv_infty
+                                  pv_operation
+                                  ps_ret_enque.
+
+  DATA : ls_0015  TYPE gty_0015,
+         ls_p0015 TYPE p0015.
+
+  CLEAR: ls_0015.
+  LOOP AT pt_0015 INTO ls_0015.
+
+*  Fill Data/Infotype and Operation Details.
+    ls_p0015 =  VALUE #( LET date = ls_0015-begda+6(4) && ls_0015-begda+3(2) && ls_0015-begda+0(2)
+                      IN pernr  = |{ ls_0015-pernr ALPHA =  IN }|
+                         infty  = pv_infty
+                         lgart  = ls_0015-lgart
+                         begda  = date
+                         endda  = date
+                         anzhl  = ls_0015-anzhl
+                        ).
+
+** Fill in the cost center into memory ID
+    IF NOT ls_0015-kostl IS INITIAL.
+      EXPORT ls_0015-kostl TO MEMORY ID 'ZHR_COST_0015'.
+    ENDIF.
+
+*  Lock the PERNR before processing.
+    PERFORM employee_enquequ USING    ls_p0015-pernr pv_infty ls_0015-lgart
+                             CHANGING ps_ret_enque.
+    IF ps_ret_enque IS INITIAL .
+      PERFORM modify_infotype_data USING pv_infty       ls_p0015-pernr
+                                         ls_0015-lgart  ls_0015-seqnr ls_p0015
+                                         ls_p0015-begda  pv_operation .
+
+      PERFORM employee_dequeue USING ls_p0015-pernr .
+    ENDIF.
+
+    CLEAR : ls_p0015, ls_0015.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INFOTYPE_2013_DATA
+*&---------------------------------------------------------------------*
+*       Update infotype 2013 with data from inbound file
+*----------------------------------------------------------------------*
+FORM infotype_2013_data  TABLES   pt_2013
+                         USING    pv_infty
+                                  pv_operation
+                                  ps_ret_enque.
+
+  DATA : ls_2013  TYPE gty_2013,
+         ls_p2013 TYPE p2013.
+
+  CLEAR: ls_2013.
+  LOOP AT pt_2013 INTO ls_2013 .
+
+*  Fill Data/Infotype and Operation Details.
+    ls_p2013 =  VALUE #( LET date = ls_2013-begda+6(4) && ls_2013-begda+3(2) && ls_2013-begda+0(2)
+                     IN  pernr  = |{ ls_2013-pernr ALPHA = IN }|
+                         ktart  = ls_2013-ktart
+                         begda  = date
+                         endda  = date
+                         accnu  = ls_2013-accnu
+                         acctr  = 'Y'
+                        ).
+
+*  Lock the PERNR before processing.
+    PERFORM employee_enquequ USING    ls_p2013-pernr pv_infty ls_p2013-ktart
+                             CHANGING ps_ret_enque.
+    IF ps_ret_enque IS INITIAL .
+      PERFORM modify_infotype_data USING pv_infty       ls_p2013-pernr
+                                         ls_p2013-subty ls_p2013-seqnr ls_p2013
+                                         ls_p2013-begda  pv_operation .
+
+      PERFORM employee_dequeue USING ls_p2013-pernr .
+    ENDIF.
+    CLEAR : ls_p2013, ls_2013.
+  ENDLOOP.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ARCHIVE_FILES
+*&---------------------------------------------------------------------*
+*       Archive the files once they are processed
+*----------------------------------------------------------------------*
+FORM archive_files TABLES pt_salfldir
+                   USING pv_path  .
+
+  DATA : ls_temp        TYPE sychar512,
+         ls_source_file TYPE rlgrap-filename,
+         ls_target_file TYPE rlgrap-filename,
+         ls_epsfili     TYPE epsfili.
+
+  CLEAR: ls_epsfili, ls_source_file, ls_target_file.
+  LOOP AT pt_salfldir INTO ls_epsfili  .
+
+    ls_target_file = ls_source_file = pv_path && ls_epsfili-name.
+    REPLACE 'inbound' WITH 'inbound/archive' INTO ls_target_file.
+    CONDENSE ls_target_file NO-GAPS.
+
+    OPEN DATASET ls_source_file FOR INPUT IN TEXT  MODE ENCODING DEFAULT.
+    IF sy-subrc = 0.
+      OPEN DATASET ls_target_file FOR OUTPUT IN TEXT MODE ENCODING DEFAULT.
+      IF sy-subrc = 0.
+        DO.
+          READ DATASET ls_source_file INTO ls_temp.
+          IF sy-subrc EQ 0.
+            TRANSFER ls_temp TO ls_target_file.      "#EC CI_USE_WANTED
+          ELSE.
+            EXIT.
+          ENDIF.
+        ENDDO.
+
+        CLOSE DATASET ls_source_file.
+        CLOSE DATASET ls_target_file.
+
+*delete the inbound file as it is archived
+        DELETE DATASET ls_source_file.
+        IF sy-subrc = 0.
+          WRITE : / | File | && ls_source_file &&   |  is archived  |.
+        ENDIF.
+
+      ELSE.
+        WRITE 'Error in opening file' && ls_target_file .
+      ENDIF.
+
+    ELSE.
+      WRITE 'Error in opening file' && ls_source_file.
+    ENDIF.
+
+    CLEAR : ls_epsfili, ls_source_file, ls_target_file.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_ERRORS
+*&---------------------------------------------------------------------*
+*       Error Log File
+*----------------------------------------------------------------------*
+FORM display_errors  TABLES   pt_error_log.
+
+  IF sy-batch = abap_true.
+*   Declaring and setting values to print parameters
+    DATA(ls_print) = VALUE slis_print_alv( print              = abap_true
+                                           no_print_listinfos = abap_true ).
+  ENDIF.
+
+  DATA(ls_layout) = VALUE slis_layout_alv( zebra              = abap_true
+                                           colwidth_optimize  = abap_true ).
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program     = sy-repid
+      i_callback_top_of_page = 'TOP-OF-PAGE'
+      i_structure_name       = 'ZHR_SNSW_INBOUND_ALV_STRUCTURE'
+      is_layout              = ls_layout
+      i_save                 = abap_false
+      is_print               = ls_print
+    TABLES
+      t_outtab               = pt_error_log
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TOP-OF-PAGE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM top-of-page.
+  CONSTANTS :
+    lc_h TYPE slis_listheader-typ  VALUE 'H',
+    lc_s TYPE slis_listheader-typ  VALUE 'S'.
+  DATA :  lv_date TYPE c LENGTH 10 .
+
+*ALV Header declarations
+  DATA: lt_header TYPE slis_t_listheader,
+        ls_header TYPE slis_listheader.
+* Title
+  APPEND VALUE #( typ  = lc_h
+                  info = text-006
+                 ) TO lt_header .
+
+  WRITE sy-datum TO lv_date DD/MM/YYYY .
+* Date
+  APPEND VALUE #( typ  = lc_s
+                  key  = text-008
+                  info = lv_date
+                 ) TO lt_header .
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_header.
+ENDFORM.                    "top-of-page
+*&-----------
+*&---------------------------------------------------------------------*
+*&      Form  CONVERT_DATA_TO_SAP_FORMAT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      <--P_LS_0573_ADVNC  text
+*----------------------------------------------------------------------*
+FORM convert_data_to_sap_format  CHANGING ps_0573_field.
+  IF ps_0573_field = gc_y.
+    CLEAR ps_0573_field. ps_0573_field = abap_true.
+  ELSE.
+    CLEAR ps_0573_field.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CONVERT_HALFPAY_TO_SAP_FORMAT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      <--P_LS_0573_HALFP  text
+*----------------------------------------------------------------------*
+FORM convert_halfpay_to_sap_format  CHANGING ps_0573_halfp.
+  IF ps_0573_halfp = gc_y.
+    CLEAR ps_0573_halfp. ps_0573_halfp = gc_h.
+  ELSE.
+    CLEAR ps_0573_halfp.
+  ENDIF.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ERROR_MAIL
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM error_mail .
+  TYPES: BEGIN OF ty_email,
+           name TYPE rvari_vnam,
+           type TYPE rsscr_kind,
+           sign TYPE tvarv_sign,
+           opti TYPE tvarv_opti,
+           low  TYPE rvari_val_255,
+         END OF ty_email.
+
+  DATA: l_result       TYPE os_boolean,
+        lv_doc_send    TYPE REF TO cl_bcs,
+        lv_document    TYPE REF TO cl_document_bcs,
+        lt_contents    TYPE soli_tab,
+        ls_contents    TYPE soli,
+        lv_attach_name TYPE sood-objdes,
+        lv_mailhex     TYPE solix,
+        lv_result      TYPE os_boolean,
+        lv_recipient   TYPE REF TO if_recipient_bcs,
+        lv_email       TYPE adr6-smtp_addr,
+        l_subject      TYPE so_obj_des.
+  DATA : lv_string      TYPE string, "declare string
+         lv_data_string TYPE string. "declare string
+  DATA: lt_binary_content TYPE solix_tab.
+  DATA lv_xstring TYPE xstring .
+  DATA: lv_anzhl TYPE string.
+  DATA: lv_accac TYPE string.
+  DATA: lv_total TYPE string,
+        lt_email TYPE TABLE OF ty_email,
+        ls_email TYPE ty_email.
+
+  CONSTANTS:    lc_email TYPE adr6-smtp_addr    VALUE 'EMAIL',
+                lc_type  TYPE rsscr_kind         VALUE 'S',
+                lc_sign  TYPE tvarv_sign         VALUE 'I',
+                lc_opti  TYPE tvarv_opti         VALUE 'EQ'.
+
+
+  CREATE OBJECT lv_document.
+
+  l_subject = 'Error_SNSW_TimeSheet_inbound_from_Kronos'.
+  ls_contents-line = 'Please correct the error records attached in mail and process again'.
+  APPEND ls_contents TO lt_contents.
+
+*Create document
+  lv_document = cl_document_bcs=>create_document(
+   i_type = 'TXT'
+   i_subject = l_subject
+* i_length = '1000'
+* i_language = sy-langu
+* i_importance = '1'
+   i_text = lt_contents ).
+
+* Creating persistent object will allow you to set the document in the mail
+  lv_doc_send = cl_bcs=>create_persistent( ).
+
+  CALL METHOD lv_doc_send->set_document( lv_document ).
+
+
+*Convert data to binary and create attachment
+* convert internal table data into string with horizantal tab (tab) and new line.
+  LOOP AT gt_final_error INTO gs_error_log.
+    CONCATENATE gs_error_log-operation
+                gs_error_log-pernr
+                gs_error_log-infty
+                gs_error_log-subty
+                gs_error_log-msgty
+                gs_error_log-msgno
+                gs_error_log-message
+                INTO lv_string SEPARATED BY '|'.
+    CONCATENATE lv_data_string lv_string INTO lv_data_string SEPARATED BY cl_abap_char_utilities=>newline.
+    CLEAR: gs_error_log, lv_string.
+  ENDLOOP.
+
+* Convert string data into xstring using function module HR_KR_STRING_TO_XSTRING.
+**convert string to xstring
+  CALL FUNCTION 'HR_KR_STRING_TO_XSTRING'
+    EXPORTING
+*     codepage_to      = '8300'
+      unicode_string   = lv_data_string
+*     OUT_LEN          =
+    IMPORTING
+      xstring_stream   = lv_xstring
+    EXCEPTIONS
+      invalid_codepage = 1
+      invalid_string   = 2
+      OTHERS           = 3.
+  IF sy-subrc <> 0.
+    IF sy-subrc = 1 .
+
+    ELSEIF sy-subrc = 2 .
+      WRITE:/ 'invalid string ' .
+    ENDIF.
+  ENDIF.
+
+*Convert xstring data to binary data using function module SCMS_XSTRING_TO_BINARY .
+***Xstring to binary
+  CALL FUNCTION 'SCMS_XSTRING_TO_BINARY'
+    EXPORTING
+      buffer     = lv_xstring
+    TABLES
+      binary_tab = lt_binary_content.
+
+*  * attchment to mail
+  lv_attach_name = 'SNSW Timesheet Inbound'.
+  CALL METHOD lv_document->add_attachment
+    EXPORTING
+      i_attachment_type    = 'XLS'
+      i_attachment_subject = lv_attach_name
+      i_att_content_hex    = lt_binary_content.
+
+
+*Set recipient for the send request, fetch from email ids which are mainted in the tvarvc table
+  REFRESH:lt_email.
+  SELECT name type sign opti low
+     FROM tvarvc
+     INTO TABLE lt_email
+     WHERE name = lc_email
+     AND   type = lc_type
+     AND   sign = lc_sign
+     AND   opti = lc_opti.
+*Begin of changes by PAGADALS as per DE5K906282 on 03/05/2017
+*Building an exception if there is no email maintained in tvarvc
+  IF sy-subrc NE 0.
+    MESSAGE text-009 TYPE 'E'.
+  ELSE.
+*End of changes by PAGADALS as per DE5K906282 on 03/05/2017
+    CLEAR ls_email.
+    LOOP AT lt_email INTO ls_email.
+      lv_email  = ls_email-low.
+      lv_recipient = cl_cam_address_bcs=>create_internet_address( lv_email ).
+*add recipient to send request
+      CALL METHOD lv_doc_send->add_recipient
+        EXPORTING
+          i_recipient = lv_recipient
+          i_express   = 'X'.
+    ENDLOOP.
+
+*Set immediate sending
+    TRY.
+        CALL METHOD lv_doc_send->set_send_immediately
+          EXPORTING
+            i_send_immediately = 'X'.
+**Catch exception here
+    ENDTRY.
+
+*Finally send email using send request.
+    CALL METHOD lv_doc_send->send(
+      EXPORTING
+        i_with_error_screen = 'X'
+      RECEIVING
+        result              = lv_result ).
+
+    COMMIT WORK.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPDATE_2001
+*&---------------------------------------------------------------------*
+*       Update infotype 2001
+*----------------------------------------------------------------------*
+FORM update_2001 USING ls_0573 TYPE gty_0573.
+
+
+  DATA : ls_p2001 TYPE p2001.
+
+  CONSTANTS : gc_2001 TYPE infty VALUE '2001',
+              lc_100  TYPE subty VALUE '0100',
+              lc_110  TYPE subty VALUE '0110',
+              lc_300  TYPE subty VALUE '0300',
+              lc_310  TYPE subty VALUE '0310',
+              lc_560  TYPE subty VALUE '0560',
+              lc_565  TYPE subty VALUE '0565',
+              lc_580  TYPE subty VALUE '0580',
+              lc_590  TYPE subty VALUE '0590',
+              lc_595  TYPE subty VALUE '0595',
+              lc_597  TYPE subty VALUE '0597',
+              lc_700  TYPE subty VALUE '0700',
+              lc_710  TYPE subty VALUE '0710',
+              lc_820  TYPE subty VALUE '0820',
+              lc_825  TYPE subty VALUE '0825',
+              lc_800  TYPE subty VALUE '0800',
+              lc_810  TYPE subty VALUE '0810',
+              lc_250  TYPE subty VALUE '0250',
+              lc_255  TYPE subty VALUE '0255',
+              lc_750  TYPE subty VALUE '0750',
+              lc_760  TYPE subty VALUE '0760',
+              lc_h    TYPE pau_confh VALUE 'H'.
+
+*Fill Data/Infotype and Operation Details.
+  ls_p2001 = VALUE #( LET date = ls_0573-begda+6(4) && ls_0573-begda+3(2) && ls_0573-begda+0(2)
+                  IN  pernr    =  |{ ls_0573-pernr ALPHA = IN }|
+                      awart    = ls_0573-lcode
+                      begda    = date
+                      endda    = date
+                      beguz   = ls_0573-beguz
+                      enduz   = ls_0573-enduz
+                      ) .
+
+  ls_p2001-infty = gc_2001.
+*Updating infotype 2001 with the corresponding half pay subtypes
+  IF gv_confh = lc_h.
+    CASE ls_0573-lcode.
+      WHEN lc_100.
+        ls_p2001-subty = lc_110.
+        ls_p2001-awart = lc_110.
+      WHEN lc_300.
+        ls_p2001-subty = lc_310.
+        ls_p2001-awart = lc_310.
+      WHEN lc_560.
+        ls_p2001-subty = lc_565.
+        ls_p2001-awart = lc_565.
+      WHEN lc_700.
+        ls_p2001-subty = lc_710.
+        ls_p2001-awart = lc_710.
+      WHEN lc_580.
+        ls_p2001-subty = lc_590.
+        ls_p2001-awart = lc_590.
+      WHEN lc_820.
+        ls_p2001-subty = lc_825.
+        ls_p2001-awart = lc_825.
+      WHEN OTHERS.
+    ENDCASE.
+  ENDIF.
+
+** Update the infotype 2001 with subty 810 in case of leave code 800
+  IF ls_0573-lcode = lc_800.
+    ls_p2001-subty = lc_810.
+    ls_p2001-awart = lc_810.
+  ENDIF.
+
+** Update the infotype 2001 with subty 255 in case of leave code 250
+  IF ls_0573-lcode = lc_250.
+    ls_p2001-subty = lc_255.
+    ls_p2001-awart = lc_255.
+  ENDIF.
+
+** Update the infotype 2001 with subty 760 in case of leave code 750
+*begin of changes by rahulb 14/11/2017 DE5K912747
+*  IF ls_0573-lcode = lc_750.
+*    ls_p2001-subty = lc_760.
+*    ls_p2001-awart = lc_760.
+*  ENDIF.
+*end of changes by rahulb 14/11/2017 DE5K912747
+
+** Update the infotype 2001 with subty 597 in case of leave code 595
+  IF ls_0573-lcode = lc_595.
+    ls_p2001-subty = lc_597.
+    ls_p2001-awart = lc_597.
+  ENDIF.
+*begin of changes by rahulb 14/11/2017 DE5K912747
+  IF gv_0760 = lc_760.
+    ls_p2001-awart = lc_760.
+  ENDIF.
+*end of changes by rahulb 14/11/2017 DE5K912747
+
+  PERFORM modify_infotype_data USING gc_2001        ls_p2001-pernr
+                                     ls_p2001-awart ls_p2001-seqnr ls_p2001
+                                     ls_p2001-begda gc_ins .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DEL_INFOTYPE_2001
+*&---------------------------------------------------------------------*
+*       Delete records from 2001
+*----------------------------------------------------------------------*
+FORM del_infotype_2001 USING pv_pernr pv_subty
+                             pv_begda pv_operation.
+
+  DATA:ls_dyn_line_2001 TYPE REF TO data,
+       ls_zzzz          TYPE gty_zzzz.
+
+  FIELD-SYMBOLS:<fs_infty>    TYPE prelp-infty,
+                <fs_record_o> TYPE any,
+                <fs_subty>    TYPE subty,
+                <fs_begda>    TYPE begda,
+                <fs_endda>    TYPE begda,
+                <fs_pernr>    TYPE persno,
+                <fs_seqnr>    TYPE seqnr.
+
+  CONSTANTS:  lc_2001 TYPE infty VALUE '2001',
+              lc_100  TYPE subty VALUE '0100',
+              lc_110  TYPE subty VALUE '0110',
+              lc_300  TYPE subty VALUE '0300',
+              lc_310  TYPE subty VALUE '0310',
+              lc_560  TYPE subty VALUE '0560',
+              lc_565  TYPE subty VALUE '0565',
+              lc_580  TYPE subty VALUE '0580',
+              lc_590  TYPE subty VALUE '0590',
+              lc_700  TYPE subty VALUE '0700',
+              lc_710  TYPE subty VALUE '0710',
+              lc_820  TYPE subty VALUE '0820',
+              lc_825  TYPE subty VALUE '0825',
+              lc_800  TYPE subty VALUE '0800',
+              lc_810  TYPE subty VALUE '0810',
+              lc_250  TYPE subty VALUE '0250',
+              lc_255  TYPE subty VALUE '0255',
+              lc_750  TYPE subty VALUE '0750',
+              lc_760  TYPE subty VALUE '0760',
+              lc_595  TYPE subty VALUE '0595',
+              lc_597  TYPE subty VALUE '0597',
+              lc_h    TYPE pau_confh VALUE 'H'.
+
+  CREATE DATA ls_dyn_line_2001 TYPE p2001.
+  ASSIGN ls_dyn_line_2001->* TO <fs_record_o>.
+
+  IF <fs_record_o> IS ASSIGNED .
+    ASSIGN COMPONENT 'PERNR' OF STRUCTURE <fs_record_o> TO <fs_pernr>.
+    <fs_pernr> = pv_pernr.
+
+    ASSIGN COMPONENT 'INFTY' OF STRUCTURE <fs_record_o> TO <fs_infty>.
+    <fs_infty> = lc_2001.
+
+    ASSIGN COMPONENT 'BEGDA' OF STRUCTURE <fs_record_o> TO <fs_begda>.
+    <fs_begda> = pv_begda.
+
+    ASSIGN COMPONENT 'ENDDA' OF STRUCTURE <fs_record_o> TO <fs_endda>.
+    <fs_endda> = pv_begda.
+
+    ASSIGN COMPONENT 'SEQNR' OF STRUCTURE <fs_record_o> TO <fs_seqnr>.
+
+** Update the subtypes in case of the below leave codes
+*Updating infotype 2001 with the corresponding half pay subtypes
+    IF gv_confh = lc_h.
+      CASE pv_subty.
+        WHEN lc_100.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_110.
+        WHEN lc_300.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_310.
+        WHEN lc_560.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_565.
+        WHEN lc_700.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_710.
+        WHEN lc_580.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_590.
+        WHEN lc_820.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_825.
+        WHEN OTHERS.
+      ENDCASE.
+    ELSE.
+      CASE pv_subty.
+        WHEN lc_800.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_810.
+        WHEN lc_250.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_255.
+* begin of changes by rahulb 15/11/2017 DE5K912747
+*        WHEN lc_750.
+*          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+*          <fs_subty> = lc_760.
+* end of changes by rahulb 15/11/2017 DE5K912747
+        WHEN lc_595.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = lc_597.
+        WHEN OTHERS.
+          ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+          <fs_subty> = pv_subty.
+      ENDCASE.
+    ENDIF.
+
+*    begin of changes by rahulb DE5K912747 15/11/2017
+*to read the 2001 records as the 750 leave code in 573 is 760 in 2001
+    IF <fs_subty> = lc_750.
+      FIELD-SYMBOLS: <fs_2001> TYPE ANY TABLE,
+                     <ls_2001> TYPE any.
+      DATA : lt_2001 TYPE TABLE OF p2001,
+             ls_2001 TYPE p2001.
+      ASSIGN lt_2001 TO <fs_2001>.
+      PERFORM read_records USING pv_pernr <fs_infty> pv_begda
+                        CHANGING <fs_2001>.
+      CLEAR ls_2001.
+      LOOP AT <fs_2001> INTO ls_2001.
+        IF ls_2001-subty = lc_760.
+          <fs_subty> = lc_760.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+*    end of changes by rahulb DE5K912747 15/11/2017
+
+    PERFORM modify_infotype_data USING <fs_infty> pv_pernr
+                                       <fs_subty>  <fs_seqnr> <fs_record_o>
+                                       pv_begda  pv_operation .
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  READ_RECORDS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_<FS_RECORDS>  text
+*      -->P_<FS_PERNR>  text
+*      -->P_<FS_INFTY>  text
+*----------------------------------------------------------------------*
+FORM read_records USING pv_pernr pv_infty pv_begda
+                  CHANGING pv_records TYPE STANDARD TABLE.
+
+  DATA: lw_records TYPE p0573.
+
+  REFRESH pv_records.
+  CALL FUNCTION 'HR_READ_INFOTYPE'
+    EXPORTING
+      pernr           = pv_pernr
+      infty           = pv_infty
+      begda           = pv_begda
+      endda           = pv_begda
+    TABLES
+      infty_tab       = pv_records
+    EXCEPTIONS
+      infty_not_found = 1
+      OTHERS          = 2.
+  IF sy-subrc IS INITIAL AND pv_infty = '0573'.
+    CLEAR: lw_records.
+    LOOP AT pv_records INTO lw_records.
+      gv_confh = lw_records-confh.
+      CLEAR: lw_records.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  INFOTYPE_2012_DATA
+*&---------------------------------------------------------------------*
+*       Update infotype 2012 fromteh inbound file.
+*----------------------------------------------------------------------*
+FORM infotype_2012_data  TABLES   pt_2012
+                         USING    pv_infty
+                                  pv_operation
+                                  ps_ret_enque.
+
+  DATA : ls_2012  TYPE gty_2012,
+         ls_p2012 TYPE p2012.
+
+  CLEAR: ls_2012.
+  LOOP AT pt_2012 INTO ls_2012 .
+
+*  Fill Data/Infotype and Operation Details.
+    ls_p2012 =  VALUE #( LET date = ls_2012-begda+6(4) && ls_2012-begda+3(2) && ls_2012-begda+0(2)
+                     IN  pernr  = |{ ls_2012-pernr ALPHA = IN }|
+                         subty  = ls_2012-subty
+                         begda  = date
+                         endda  = date
+                         anzhl = ls_2012-anzhl
+                        ).
+
+*  Lock the PERNR before processing.
+    PERFORM employee_enquequ USING    ls_p2012-pernr pv_infty ls_p2012-subty
+                             CHANGING ps_ret_enque.
+    IF ps_ret_enque IS INITIAL .
+      PERFORM modify_infotype_data USING pv_infty       ls_p2012-pernr
+                                         ls_p2012-subty ls_p2012-seqnr ls_p2012
+                                         ls_p2012-begda  pv_operation .
+
+      PERFORM employee_dequeue USING ls_p2012-pernr .
+    ENDIF.
+
+    CLEAR : ls_p2012, ls_2012.
+  ENDLOOP.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPDATE_HALFPAY
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM update_halfpay USING pv_pernr
+                          pv_infty
+                          pv_subty.
+
+  PERFORM bdc_headr       USING 'SAPMP50A' '1000'.
+  PERFORM bdc_field_value USING 'BDC_OKCODE'
+                                '/00'.
+  PERFORM bdc_field_value       USING 'RP50G-PERNR'
+                                pv_pernr.
+  PERFORM bdc_field_value       USING 'RP50G-TIMR6'
+                                'X'.
+  PERFORM bdc_field_value       USING 'BDC_CURSOR'
+                                'RP50G-CHOIC'.
+  PERFORM bdc_field_value       USING 'RP50G-CHOIC'
+                                pv_infty.
+  PERFORM bdc_headr      USING 'SAPMP50A' '1000'.
+  PERFORM bdc_field_value       USING 'BDC_CURSOR'
+                                'RP50G-PERNR'.
+  PERFORM bdc_field_value       USING 'BDC_OKCODE'
+                                '=LIST'.
+  PERFORM bdc_field_value       USING 'RP50G-PERNR'
+                                pv_pernr.
+  PERFORM bdc_field_value       USING 'RP50G-TIMR6'
+                                'X'.
+*perform bdc_field_value       using 'RP50G-CHOIC'
+*                              record-CHOIC_006.
+  PERFORM bdc_headr      USING 'MP057300' '3000'.
+  PERFORM bdc_field_value       USING 'BDC_CURSOR'
+                                'P0573-LCODE(01)'.
+  PERFORM bdc_field_value       USING 'BDC_OKCODE'
+                                '=MOD'.
+  PERFORM bdc_field_value       USING 'RP50M-BEGDA'
+                                 '01.01.1800'.
+  PERFORM bdc_field_value       USING 'RP50M-ENDDA'
+                                 '31.12.9999'.
+*perform bdc_field_value       using 'RP50M-PAGEA'
+*                              record-PAGEA_009.
+*perform bdc_field_value       using 'RP50M-SELE2(01)'
+*                              record-SELE2_01_010.
+  PERFORM bdc_headr      USING 'MP057300' '2000'.
+  PERFORM bdc_field_value       USING 'BDC_CURSOR'
+                                'Q0573-HALFP'.
+  PERFORM bdc_field_value       USING 'BDC_OKCODE'
+                                '/00'.
+  PERFORM bdc_field_value       USING 'P0573-BEGDA'
+                                gv_date.
+  PERFORM bdc_field_value       USING 'P0573-ENDDA'
+                                 gv_date.
+  PERFORM bdc_field_value       USING 'P0573-LCODE'
+                                 pv_subty.
+  PERFORM bdc_field_value       USING 'P0573-BEGUZ'
+                                 gv_stime.
+  PERFORM bdc_field_value       USING 'P0573-ENDUZ'
+                                 gv_etime.
+  PERFORM bdc_field_value       USING 'Q0573-HALFP'
+                                'X'.
+  PERFORM bdc_field_value       USING 'P0573-ZZBEGUZ'
+                                gv_stime.
+  PERFORM bdc_field_value       USING 'P0573-ZZENDUZ'
+                                gv_etime.
+  PERFORM bdc_headr      USING 'MP057300' '2000'.
+  PERFORM bdc_field_value       USING 'BDC_CURSOR'
+                                'P0573-BEGDA'.
+  PERFORM bdc_field_value       USING 'BDC_OKCODE'
+                                '=UPD'.
+  PERFORM bdc_field_value       USING 'P0573-BEGDA'
+                                gv_date.
+  PERFORM bdc_field_value       USING 'P0573-ENDDA'
+                                gv_date.
+  PERFORM bdc_field_value       USING 'P0573-LCODE'
+                                pv_subty.
+  PERFORM bdc_field_value       USING 'P0573-BEGUZ'
+                                gv_stime.
+  PERFORM bdc_field_value       USING 'P0573-ENDUZ'
+                                gv_etime.
+  PERFORM bdc_field_value       USING 'Q0573-HALFP'
+                                'X'.
+  PERFORM bdc_field_value       USING 'P0573-ZZBEGUZ'
+                               gv_stime.
+  PERFORM bdc_field_value       USING 'P0573-ZZENDUZ'
+                                gv_etime.
+  PERFORM bdc_field_value       USING 'BDC_OKCODE'
+                               '=BU'.
+*  perform bdc_insert using 'PA20'.
+  CALL TRANSACTION 'PA30' USING gt_bdc_tab
+     MODE w_mode
+     UPDATE 'S'
+     MESSAGES INTO t_msg.
+  REFRESH:gt_bdc_tab.
+  CLEAR:gv_date,pv_subty,pv_pernr,gv_stime,gv_etime.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BDC_HEADR
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_3198   text
+*      -->P_3199   text
+*----------------------------------------------------------------------*
+FORM bdc_headr  USING    program dynpro.
+
+  CLEAR:gt_bdc_tab.
+  gt_bdc_tab-program = program.
+  gt_bdc_tab-dynpro  = dynpro.
+  MOVE 'X'          TO gt_bdc_tab-dynbegin.
+  APPEND gt_bdc_tab.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BDC_FIELD_VALUE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_3203   text
+*      -->P_3204   text
+*----------------------------------------------------------------------*
+FORM bdc_field_value  USING    fnam fval.
+
+  CLEAR:gt_bdc_tab.
+
+  gt_bdc_tab-fnam = fnam.
+
+  ASSIGN fval TO <f>.
+  MOVE <f> TO gt_bdc_tab-fval.
+
+  APPEND gt_bdc_tab.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BDC_INSERT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_3397   text
+*----------------------------------------------------------------------*
+FORM bdc_insert  USING w_trans.
+*-----------------------------
+
+  CALL FUNCTION 'BDC_INSERT'
+    EXPORTING
+      tcode     = w_trans
+    TABLES
+      dynprotab = gt_bdc_tab.
+
+  REFRESH gt_bdc_tab.
+
+  w_notrans = w_notrans + 1.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZUPDATE_INFTY_2003
+*&---------------------------------------------------------------------*
+*       Update Infotype 2003 if data is present in 0573 with advance
+*       payment check or leavel loading check
+*----------------------------------------------------------------------*
+FORM zupdate_infty_2003  USING ls_0573 TYPE gty_0573.
+
+  DATA : lt_p2003 TYPE TABLE OF p2003,
+         ls_p2003 TYPE p2003,
+         lw_p2002 TYPE gty_2002,
+         lw_0573  TYPE gty_0573,
+         lv_beguz TYPE char6,
+         lv_enduz TYPE char6,
+         lv_hours TYPE beguz,
+         lv_total TYPE stdaz,
+         lv_begti TYPE uzeit,
+         lv_endti TYPE uzeit,
+         lv_datum TYPE sy-datum,
+         lv_begln TYPE i,
+         lv_endln TYPE i.
+
+  CONSTANTS : lc_2003 TYPE infty     VALUE '2003',
+              lc_0800 TYPE pau_lcode VALUE '0800',
+              lc_0750 TYPE pau_lcode VALUE '0750',
+              lc_0830 TYPE pau_lcode VALUE '0830',
+              lc_0250 TYPE pau_lcode VALUE '0250',
+              lc_0860 TYPE pau_lcode VALUE '0860',
+              lc_0595 TYPE pau_lcode VALUE '0595',
+              lc_0760 TYPE pau_lcode VALUE '0760'. "by rahulb DE5K912747 14/11/2017.
+
+** If its a LWOP leave Code
+  IF ls_0573-lcode EQ lc_0800 OR
+     ls_0573-lcode EQ lc_0750 OR
+     ls_0573-lcode EQ lc_0830 OR
+     ls_0573-lcode EQ lc_0250 OR
+     ls_0573-lcode EQ lc_0860 OR
+     ls_0573-lcode EQ lc_0595 OR
+     ls_0573-lcode EQ lc_0760.  "by rahulb DE5K912747 14/11/2017.
+
+    lv_datum = ls_0573-begda+6(4) && ls_0573-begda+3(2) && ls_0573-begda+0(2).
+
+** Check if a record already exists
+    CALL FUNCTION 'HR_READ_INFOTYPE'
+      EXPORTING
+        pernr           = ls_0573-pernr
+        infty           = '2003'
+        begda           = lv_datum
+        endda           = lv_datum
+      TABLES
+        infty_tab       = lt_p2003
+      EXCEPTIONS
+        infty_not_found = 1
+        OTHERS          = 2.
+    IF lt_p2003[] IS INITIAL.
+
+      CLEAR: lw_p2002.
+      LOOP AT gt_2002 INTO lw_p2002
+        WHERE begda EQ ls_0573-begda
+          AND awart NE '1002'.
+
+        lv_total = lv_total + lw_p2002-stdaz.
+
+        CLEAR: lw_p2002.
+      ENDLOOP.
+
+      lv_beguz = ls_0573-beguz.
+      lv_enduz = ls_0573-enduz.
+
+      CLEAR: lw_0573.
+      LOOP AT gt_0573 INTO lw_0573
+                 WHERE pernr EQ ls_0573-pernr
+                   AND begda EQ ls_0573-begda
+                   AND beguz NE ls_0573-beguz.
+        IF lv_beguz GE lw_0573-beguz.
+          lv_beguz = lw_0573-beguz.
+        ENDIF.
+
+        IF lv_enduz LE lw_0573-beguz.
+          lv_enduz = lw_0573-enduz.
+        ENDIF.
+
+        CLEAR: lw_0573.
+      ENDLOOP.
+
+      lv_begln = strlen( lv_beguz ).
+      lv_endln = strlen( lv_enduz ).
+
+      IF lv_begln LE 4.
+        CONCATENATE lv_beguz '00' INTO lv_begti.
+      ENDIF.
+
+      IF lv_endln LE 4.
+        CONCATENATE lv_enduz '00' INTO lv_endti.
+      ENDIF.
+
+      IF lv_begti EQ '090000'.
+        lv_endti = lv_endti + ( lv_total * 3600 ).
+      ELSE.
+        lv_begti = lv_begti - ( lv_total * 3600 ).
+      ENDIF.
+
+*  Fill Data/Infotype and Operation Details.
+      ls_p2003 = VALUE #( LET date = ls_0573-begda+6(4) && ls_0573-begda+3(2) && ls_0573-begda+0(2)
+                      IN  pernr    =  |{ ls_0573-pernr ALPHA = IN }|
+                          begda    = date
+                          endda    = date
+                          beguz   = lv_begti
+                          enduz   = lv_endti
+                          ) .
+    ENDIF.
+  ELSE.
+*Fill Data/Infotype and Operation Details.
+    ls_p2003 = VALUE #( LET date = ls_0573-begda+6(4) && ls_0573-begda+3(2) && ls_0573-begda+0(2)
+                    IN  pernr    =  |{ ls_0573-pernr ALPHA = IN }|
+                        begda    = date
+                        endda    = date
+                        beguz   = ls_0573-beguz
+                        enduz   = ls_0573-enduz
+                        ) .
+  ENDIF.
+
+  ls_p2003-infty = lc_2003.
+
+** Set as OFF
+  IF ls_0573-lcode = 'OFFF'.
+    ls_p2003-tprog = 'OFF'.
+    CLEAR: ls_p2003-beguz, ls_p2003-enduz.
+  ENDIF.
+
+  PERFORM modify_infotype_data USING lc_2003        ls_p2003-pernr
+                                     ls_p2003-subty ls_p2003-seqnr ls_p2003
+                                     ls_p2003-begda gc_ins .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZDELETE_INFTY_2003
+*&---------------------------------------------------------------------*
+*       Delete entries from 2003 if they exist in 2002.
+*----------------------------------------------------------------------*
+FORM zdelete_infty_2003  USING  pv_pernr pv_subty
+                                pv_begda pv_operation.
+
+  DATA:ls_dyn_line_2003 TYPE REF TO data,
+       ls_zzzz          TYPE gty_zzzz.
+
+  FIELD-SYMBOLS:<fs_infty>    TYPE prelp-infty,
+                <fs_record_o> TYPE any,
+                <fs_subty>    TYPE subty,
+                <fs_begda>    TYPE begda,
+                <fs_endda>    TYPE begda,
+                <fs_pernr>    TYPE persno,
+                <fs_seqnr>    TYPE seqnr.
+
+  CONSTANTS:lc_2003 TYPE infty VALUE '2003'.
+
+  CREATE DATA ls_dyn_line_2003 TYPE p2003.
+  ASSIGN ls_dyn_line_2003->* TO <fs_record_o>.
+
+  IF <fs_record_o> IS ASSIGNED .
+    ASSIGN COMPONENT 'PERNR' OF STRUCTURE <fs_record_o> TO <fs_pernr>.
+    <fs_pernr> = pv_pernr.
+
+    ASSIGN COMPONENT 'INFTY' OF STRUCTURE <fs_record_o> TO <fs_infty>.
+    <fs_infty> = lc_2003.
+
+    ASSIGN COMPONENT 'SUBTY' OF STRUCTURE <fs_record_o> TO <fs_subty>.
+    <fs_subty> = '01'.
+
+    ASSIGN COMPONENT 'BEGDA' OF STRUCTURE <fs_record_o> TO <fs_begda>.
+    <fs_begda> = pv_begda.
+
+    ASSIGN COMPONENT 'ENDDA' OF STRUCTURE <fs_record_o> TO <fs_endda>.
+    <fs_endda> = pv_begda.
+
+    ASSIGN COMPONENT 'SEQNR' OF STRUCTURE <fs_record_o> TO <fs_seqnr>.
+
+    PERFORM modify_infotype_data USING <fs_infty> <fs_pernr>
+                                       <fs_subty> <fs_seqnr> <fs_record_o>
+                                       <fs_begda>  pv_operation .
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZUPDATE_INFTY573
+*&---------------------------------------------------------------------*
+*       To update the changes in 0573 in case of leave code 800
+*----------------------------------------------------------------------*
+FORM zupdate_infty573 .
+
+  DATA: lt_messtab LIKE bdcmsgcoll OCCURS 0 WITH HEADER LINE.
+
+  CALL FUNCTION 'HR_AUPBS_ON_BDC_UPDATE'
+    EXPORTING
+      operation = 'INS'
+      pa30_oper = '=INS'
+      inty_oper = '=UPD'
+      infotype  = '0573'
+    TABLES
+      messtab   = lt_messtab.
+
+  CALL FUNCTION 'HR_REFRESH_QUODED_BUFFER'.
+
+ENDFORM.
