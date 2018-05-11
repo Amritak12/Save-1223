@@ -1,0 +1,920 @@
+*----------------------------------------------------------------------*
+*   INCLUDE ZXM06U44                                                   *
+*----------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*  Program Name: ZXM06U44                                              *
+*  Program Title: PO Notification to WBS Person Responsible            *
+*  Author: KURUVAIA                                                    *
+*  R/3 Release:  ECC 7.4                                               *
+*  Technical Script:                                                   *
+*----------------------------------------------------------------------*
+*  Type of program: User Exit                                          *
+*& The business requirement of this interface is to generate a mail    *
+*  to the responsible person in case of a PO being raised under        *
+*  project
+*                                                                      *
+*  NB: If you change the functionality of this program, please         *
+*      update the on-line documentation and the specification.         *
+*      Every Version in the Version Management must have a             *
+*      corresponding entry in the Modification History.                *
+*======================================================================*
+* MODIFICATION HISTORY                                                 *
+* DATE        USER ID(NAME)    REQUEST        DESCRIPTION OF CHANGE    *
+* 11.07.2017  KURUVAIA         DE5K908221     PO Notification to WBS   *
+*                                             WBS Person Responsible   *
+* 16.08.2017  KURUVAIA         DE5K908221     Changes to PRPS select   *
+* 25.08.2017  KURUVAIA         DE5K910169     Changes to PA0105 usrid  *
+*                                             select statement
+*======================================================================*
+** Declarations
+** Types
+  TYPES: BEGIN OF ty_wbs,
+           ebeln TYPE ekkn-ebeln,
+           ebelp TYPE ekkn-ebelp,
+           endlp TYPE ekkn-ebelp,
+           wbsel TYPE string,
+           wbcon TYPE ekkn-ps_psp_pnr,
+           accnt TYPE SAKTO,
+         END OF ty_wbs,
+
+         BEGIN OF ty_ekkn,
+           ebeln TYPE ekkn-ebeln,
+           ebelp TYPE ekkn-ebelp,
+           sakto TYPE ekkn-sakto,
+           pspnr TYPE ekkn-ps_psp_pnr,
+         END OF ty_ekkn,
+
+         BEGIN OF ty_prps,
+           pspnr TYPE prps-pspnr,
+           posid TYPE prps-posid,
+           post1 TYPE prps-post1,
+           vernr TYPE prps-vernr,
+           verna TYPE prps-verna,
+           prart TYPE prps-prart,
+           usrid TYPE p0105-usrid,
+         END OF ty_prps,
+
+         BEGIN OF ty_skat,
+           saknr TYPE skat-saknr,
+           text  TYPE skat-txt50,
+         END OF ty_skat,
+
+         BEGIN OF ty_adrc,
+           name   TYPE adrc-name1,
+           city   TYPE adrc-city1,
+           pcode  TYPE adrc-post_code1,
+           street TYPE adrc-street,
+           housn  TYPE adrc-house_num1,
+           regio  TYPE adrc-region,
+         END OF ty_adrc,
+
+         BEGIN OF ty_p0105,
+           pernr TYPE p0105-pernr,
+           usrid TYPE p0105-usrid,
+         END OF ty_p0105,
+
+         BEGIN OF ty_users,
+           pernr  TYPE p0002-pernr,
+           vorna  TYPE p0002-vorna,
+           emaild TYPE p0105-usrid_long,
+         END OF ty_users,
+
+*--Type for holding body of the email
+         BEGIN OF ty_objtxt,
+           l_solisti1 TYPE solisti1,
+         END OF ty_objtxt,
+
+*--Type for holding receiver mailids
+         BEGIN OF ty_receiver,
+           l_somlreci1 TYPE somlreci1,
+         END OF ty_receiver.
+
+*--Internal tables
+  DATA : lt_wbs      TYPE TABLE OF ty_wbs,
+         lt_ekkn     TYPE TABLE OF ty_ekkn,
+         lt_prps     TYPE TABLE OF ty_prps,
+         lt_bank     TYPE TABLE OF BAPIVENDOR_06,
+         lt_adrc     TYPE TABLE OF ty_adrc,
+         lt_p0105    TYPE TABLE OF ty_p0105,
+         lt_skat     TYPE TABLE OF ty_skat,
+         lt_users    TYPE TABLE OF ty_users,
+         lt_receiver TYPE STANDARD TABLE OF ty_receiver,
+         lt_packlist TYPE TABLE OF sopcklsti1,
+         lt_objtxt   TYPE STANDARD TABLE OF ty_objtxt.
+
+*--WorkAreas
+  DATA: lw_ekpo     TYPE uekpo,
+        lw_ekkn     TYPE uekkn,
+        lw_eket     TYPE ueket,
+        lw_detail   TYPE bapivendor_04,
+        lw_wbs      TYPE ty_wbs,
+        lw_ekkn1    TYPE ty_ekkn,
+        lw_wbs_new  TYPE ty_wbs,
+        lw_wbs_old  TYPE ty_wbs,
+        lw_prps     TYPE ty_prps,
+        lw_p0105    TYPE ty_p0105,
+        lw_adrc     TYPE ty_adrc,
+        lw_skat     TYPE ty_skat,
+        lw_users    TYPE ty_users,
+        lw_return   TYPE BAPIRET1,
+        lw_receiver TYPE somlreci1,
+        lw_packlist TYPE sopcklsti1,
+        lw_data     TYPE sodocchgi1.
+
+*--Variables
+  DATA: lv_ebeln     TYPE ekko-ebeln,
+        lv_old_ebeln TYPE ekkn-ebeln,
+        lv_old_ebelp TYPE ekkn-ebelp,
+        lv_old_endlp TYPE ekkn-ebelp,
+        lv_old_wbsel TYPE string,
+        lv_psp_pnr   TYPE ps_psp_pnr,
+        lv_sakto     TYPE sakto,
+        lv_adrc      TYPE char10,
+        lv_ccdesc    TYPE char25,
+        lv_netval    TYPE netwr,
+        lv_grsval    TYPE brtwr,
+        lw_objtxt    TYPE solisti1,
+        lv_netvl     TYPE char24,
+        lv_gsval     TYPE char24,
+        lv_lines     TYPE i,
+        lv_tabix     TYPE i,
+        lv_menge     TYPE char13,
+        lv_kwert     TYPE char15,
+        lv_netpr     TYPE char15,
+        lv_netwr     TYPE char15,
+        lv_bedat     TYPE char10,
+        lv_dedat     TYPE char10,
+        lv_supdesc   TYPE char35,
+        lv_vorna     TYPE vorna,
+        lv_nachn     TYPE nachn,
+        lv_requester TYPE char50,
+        lv_subrc     TYPE sy-subrc.
+
+*--Constants
+  DATA: lc_p      TYPE c      VALUE 'P',
+        lc_nb     TYPE char2  VALUE 'NB',
+        lc_0001   TYPE char4  VALUE '0001',
+        lc_0010   TYPE char4  VALUE '0010',
+        lc_space  TYPE c      VALUE ' ',
+        lc_endda  TYPE char6  VALUE '99991231'.
+
+*--Check if its a NB document type
+   CHECK i_ekko-bsart EQ lc_nb.
+
+*-- Update the PO number
+  CLEAR: lv_ebeln.
+  lv_ebeln  = i_ekko-ebeln.
+
+*-- Check if the line items have project and fetch the
+*-- related WBS for it.
+  CLEAR: lw_ekpo, lw_ekkn, lw_ekkn1, lw_wbs.
+  IF xekkn[] IS INITIAL.
+    SELECT ebeln
+           ebelp
+           sakto
+           ps_psp_pnr
+      FROM ekkn
+      INTO TABLE lt_ekkn
+     WHERE ebeln EQ i_ekko-ebeln.
+  ENDIF.
+
+*--Create the list of WBS being used
+  LOOP AT xekpo INTO lw_ekpo
+               WHERE knttp EQ lc_p.
+
+    lv_tabix = sy-tabix.
+
+*--Case in which new line item is added
+    IF NOT lw_ekpo-ebeln IS INITIAL AND
+       NOT xekkn[]       IS INITIAL.
+      READ TABLE xekkn INTO lw_ekkn
+               WITH KEY ebeln = lw_ekpo-ebeln
+                        ebelp = lw_ekpo-ebelp.
+
+      lw_wbs-ebeln = lw_ekkn-ebeln.
+      lv_psp_pnr   = lw_ekkn-ps_psp_pnr.
+      lw_wbs-ebelp = lw_ekkn-ebelp.
+      lw_wbs-wbcon = lw_ekkn-ps_psp_pnr.
+      lw_wbs-accnt = lw_ekkn-sakto.
+*--Case in which new PO is created
+    ELSEIF lw_ekpo-ebeln IS INITIAL.
+      READ TABLE xekkn INTO lw_ekkn
+               WITH KEY ebelp = lw_ekpo-ebelp.
+
+      lw_wbs-ebeln = i_ekko-ebeln.
+      lv_psp_pnr   = lw_ekkn-ps_psp_pnr.
+      lw_wbs-wbcon = lw_ekkn-ps_psp_pnr.
+      lw_wbs-ebelp = lw_ekkn-ebelp.
+      lw_wbs-accnt = lw_ekkn-sakto.
+*--Case in which existing line item is changed
+    ELSEIF xekkn[] IS INITIAL.
+       CLEAR: lw_ekkn1.
+       READ TABLE lt_ekkn INTO lw_ekkn1
+                WITH KEY ebeln = lw_ekpo-ebeln
+                         ebelp = lw_ekpo-ebelp.
+
+      lw_wbs-ebeln = lw_ekkn1-ebeln.
+      lw_wbs-ebelp = lw_ekkn1-ebelp.
+      lw_wbs-accnt = lw_ekkn1-sakto.
+
+      lv_psp_pnr   = lw_ekkn1-pspnr.
+      lw_wbs-wbcon = lw_ekkn1-pspnr.
+      CLEAR: lw_ekkn1.
+    ENDIF.
+
+*--Convert the WBS element
+    CALL FUNCTION 'CONVERSION_EXIT_ABPSP_OUTPUT'
+      EXPORTING
+        input  = lv_psp_pnr
+      IMPORTING
+        output = lw_wbs-wbsel.
+
+*--Compare the old record to the new one
+     IF lv_tabix EQ 1.
+       APPEND lw_wbs TO lt_wbs.
+       lv_old_wbsel = lw_wbs-wbsel.
+       lv_old_ebeln = lw_wbs-ebeln.
+       lv_old_ebelp = lw_ekpo-ebelp.
+     ELSEIF lv_old_wbsel EQ lw_wbs-wbsel AND
+            lv_old_ebeln EQ lw_wbs-ebeln.
+       lv_old_wbsel = lw_wbs-wbsel.
+       lv_old_ebeln = lw_wbs-ebeln.
+       lv_old_ebelp = lw_ekpo-ebelp.
+       CONTINUE.
+     ELSEIF lv_old_wbsel NE lw_wbs-wbsel.
+       CLEAR: lw_wbs_old, lw_wbs_new.
+       READ TABLE lt_wbs INTO lw_wbs_old
+                     WITH KEY wbsel = lv_old_wbsel.
+       IF sy-subrc IS INITIAL.
+         lw_wbs_new-ebeln = lw_wbs_old-ebeln.
+         lw_wbs_new-ebelp = lw_wbs_old-ebelp.
+         lw_wbs_new-endlp = lv_old_ebelp.
+         lw_wbs_new-wbsel = lw_wbs_old-wbsel.
+         lw_wbs_new-wbcon = lw_wbs_old-wbcon.
+         lw_wbs_new-accnt = lw_wbs_old-accnt.
+         DELETE lt_wbs[] WHERE wbsel = lv_old_wbsel. "INDEX sy-tabix.
+         APPEND lw_wbs_new TO lt_wbs.
+         CLEAR: lw_wbs_new, lw_wbs_old.
+       ENDIF.
+       APPEND lw_wbs TO lt_wbs.
+       lv_old_wbsel = lw_wbs-wbsel.
+       lv_old_ebeln = lw_wbs-ebeln.
+       lv_old_ebelp = lw_ekpo-ebelp.
+     ENDIF.
+
+*--Fetch the address number details from ekpo.
+   IF NOT lv_adrc IS INITIAL AND
+      NOT lw_ekpo-adrn2 IS INITIAL.
+      lv_adrc = lw_ekpo-adrn2.
+   ELSEIF NOT lv_adrc IS INITIAL AND
+          NOT lw_ekpo-adrnr IS INITIAL.
+      lv_adrc = lw_ekpo-adrnr.
+   ENDIF.
+  ENDLOOP.
+
+*--Append the last record.
+ CLEAR: lw_wbs_old, lw_wbs_new.
+ READ TABLE lt_wbs INTO lw_wbs_old
+               WITH KEY wbsel = lv_old_wbsel.
+   IF sy-subrc IS INITIAL.
+      lw_wbs_new-ebeln = lw_wbs_old-ebeln.
+      lw_wbs_new-ebelp = lw_wbs_old-ebelp.
+      lw_wbs_new-endlp = lv_old_ebelp.
+      lw_wbs_new-wbsel = lw_wbs_old-wbsel.
+      lw_wbs_new-wbcon = lw_wbs_old-wbcon.
+      lw_wbs_new-accnt = lw_wbs_old-accnt.
+      DELETE lt_wbs[] WHERE wbsel = lv_old_wbsel. "INDEX sy-tabix.
+      APPEND lw_wbs_new TO lt_wbs.
+      CLEAR: lw_wbs_new, lw_wbs_old, lw_wbs.
+   ENDIF.
+
+*--Delete duplicates from lt_wbs
+  SORT lt_wbs BY ebeln ebelp.
+  DELETE ADJACENT DUPLICATES FROM lt_wbs.
+
+*--Fill in the address number in case its not fetched from ekpo
+  IF lv_adrc IS INITIAL.
+    SELECT SINGLE adrnr
+      INTO lv_adrc
+      FROM T001W
+     WHERE werks EQ i_ekko-bukrs.
+  ENDIF.
+
+*--Fetch the address details.
+  SELECT name1
+         city1
+         post_code1
+         street
+         house_num1
+         region
+    INTO TABLE lt_adrc
+    FROM ADRC
+   WHERE addrnumber EQ lv_adrc.
+
+*--Fetch the company code description
+  SELECT SINGLE butxt
+    FROM t001
+    INTO lv_ccdesc
+   WHERE bukrs EQ i_ekko-bukrs.
+
+*--Fetch the Supplier Text
+CALL FUNCTION 'BAPI_VENDOR_GETDETAIL'
+  EXPORTING
+    vendorno              = i_ekko-lifnr
+ IMPORTING
+   GENERALDETAIL          = lw_detail
+   RETURN                 = lw_return
+ TABLES
+   BANKDETAIL             = lt_bank.
+
+  IF NOT lw_detail IS INITIAL.
+     lv_supdesc = lw_detail-name.
+     CLEAR: lw_detail.
+  ENDIF.
+
+*--Fetch the name of the requestor
+  SELECT SINGLE vorna
+                nachn
+    FROM PA0002
+    INTO (lv_vorna, lv_nachn)
+   WHERE pernr EQ i_ekko-zzporequester
+     AND begda LE sy-datum
+     AND endda GE sy-datum.
+
+*--Fetch the GL Account Description
+  SELECT SAKNR
+         TXT50
+    FROM SKAT
+    INTO TABLE lt_skat
+ FOR ALL ENTRIES IN lt_wbs
+   WHERE SAKNR EQ lt_wbs-accnt.
+
+*--Populate user ids based on WBS
+  CLEAR: lw_wbs.
+  LOOP AT lt_wbs INTO lw_wbs.
+     SELECT a~pspnr
+            a~posid
+            a~post1
+            a~vernr
+            a~verna
+            a~prart
+            b~s_usrnam
+  APPENDING TABLE lt_prps
+       FROM prps AS a
+      INNER JOIN tcj04 AS b
+         ON a~vernr EQ b~vernr
+        AND a~verna EQ b~verna
+      WHERE pspnr   EQ lw_wbs-wbcon.
+   CLEAR: lw_wbs.
+  ENDLOOP.
+
+  SORT lt_prps.
+  DELETE lt_prps[] WHERE prart NE 'D1' AND
+                         prart NE 'D2'.
+
+  CHECK NOT lt_prps[] IS INITIAL.
+*--Fetch User details
+    SELECT pernr
+           usrid
+      FROM pa0105
+      INTO TABLE lt_p0105
+   FOR ALL ENTRIES IN lt_prps
+    WHERE begda LE sy-datum
+      AND endda GE sy-datum
+      AND subty EQ lc_0001
+      AND usrid EQ lt_prps-usrid.
+    IF sy-subrc IS INITIAL.
+*--Fetch the first name of the pernr
+      SELECT a~pernr
+             a~vorna
+             b~usrid_long
+        INTO TABLE lt_users
+        FROM pa0002 AS a
+        INNER JOIN pa0105 AS b
+          ON b~pernr EQ a~pernr
+     FOR ALL ENTRIES IN lt_p0105
+       WHERE a~pernr EQ lt_p0105-pernr
+         AND b~subty EQ lc_0010
+         AND b~begda LE sy-datum
+         AND b~endda GE sy-datum.
+      IF sy-subrc IS INITIAL.
+        SORT lt_users BY pernr.
+        DELETE ADJACENT DUPLICATES FROM lt_users.
+      ENDIF.
+    ENDIF.
+
+*--Create the email body to send to
+*--Prepare mail body and send to the receipients.
+  CLEAR: lw_wbs.
+  LOOP AT lt_wbs INTO lw_wbs.
+
+     CLEAR: lw_prps.
+     READ TABLE lt_prps INTO lw_prps
+          WITH KEY pspnr = lw_wbs-wbcon.
+     CHECK sy-subrc IS INITIAL.
+     IF sy-subrc IS INITIAL.
+       CLEAR: lw_p0105.
+       READ TABLE lt_p0105 INTO lw_p0105
+                 WITH KEY usrid = lw_prps-usrid.
+       IF sy-subrc IS INITIAL.
+         CLEAR: lw_users.
+         READ TABLE lt_users INTO lw_users
+                         WITH KEY pernr = lw_p0105-pernr.
+          CLEAR:   lw_receiver.
+          REFRESH: lt_receiver.
+
+          TRANSLATE lw_users-emaild TO LOWER CASE.
+          lw_receiver-receiver = lw_users-emaild.
+          lw_receiver-rec_type = 'U'.
+          APPEND lw_receiver TO lt_receiver.
+          CLEAR: lw_receiver.
+      ENDIF.
+    ENDIF.
+
+*--Fill in the obtxt table
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<html>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<head>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<title>PO notification to WBS Person Responsible</title>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<meta http-equiv="Content-Type" content="text/html;'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = 'charset=iso-8859-1">'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</head>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<body>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Set font color and its type
+    lw_objtxt-line = '<FONT COLOR = "black" face="Calibri" size="3">'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    CONCATENATE '<p>Hi' lw_users-vorna ',</p>'
+           INTO lw_objtxt-line SEPARATED BY space.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Read ekpo to detemine if its a new PO or existing.
+    CLEAR: lw_ekpo.
+    READ TABLE xekpo INTO lw_ekpo
+                  WITH KEY ebeln = lw_wbs-ebeln.
+*--Case in which new PO is created
+    IF lw_ekpo-ebeln IS INITIAL.
+      CONCATENATE '<p><b>Purchase Order -'
+                  lv_ebeln
+                  'has been created.'
+                  '</b></p>'
+             INTO lw_objtxt-line
+        SEPARATED BY space.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ELSE.
+*--Case in which an existing PO is changed
+      CONCATENATE '<p><b>Purchase Order -'
+                  lv_ebeln
+                  'has been changed.'
+                  '</b></p>'
+             INTO lw_objtxt-line
+        SEPARATED BY space.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ENDIF.
+    CLEAR: lw_ekpo.
+
+*--Notification
+    lw_objtxt-line = '<TABLE  border="1"; bgcolor="#ccffff"; style="font-family: Calibri;">'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    CONCATENATE '<TR><td>&nbsp;'
+                'This is a PO notification for your review only. '
+                ' No action required.</td>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</tr>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</table>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<br>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Detail line items
+*--Company Code
+    CONCATENATE '<p>Company code&emsp; :&emsp;'
+                '<b>' lv_ccdesc '</b>'
+                '</p>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--PO Creation Date
+    WRITE i_ekko-bedat TO lv_bedat.
+    CONCATENATE '<p>PO date&emsp;&emsp;&emsp;&nbsp;&nbsp;&nbsp; :'
+                '&emsp;'
+                 '<b>'lv_bedat '</b>'
+                '</p>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Supplier
+    CONCATENATE '<p>Supplier&emsp;&emsp;&emsp;&nbsp;&nbsp;&nbsp; :'
+                '&emsp;'
+                 '<b>'lv_supdesc '</b>'
+                '</p>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Requestor
+    CONCATENATE lv_vorna lv_nachn
+           INTO lv_requester SEPARATED BY space.
+    CONCATENATE '<p>Requestor&emsp;&emsp;&emsp; :'
+                '&emsp;'
+                 '<b>'lv_requester '</b>'
+                '</p>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Delivery Address
+    CLEAR: lw_adrc.
+    READ TABLE lt_adrc INTO lw_adrc INDEX 1.
+    CONCATENATE '<p>Delivery Address&nbsp;  :'
+                '&emsp;'
+                '<b>'
+                lw_adrc-name '<br>'
+                '&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;'
+                lw_adrc-housn lc_space lw_adrc-street
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+   CONCATENATE '<br>&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;'
+               lw_adrc-city lc_space lw_adrc-pcode '<br>'
+               '&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;&emsp;'
+                lw_adrc-regio '.'
+                '</b>'
+                '</p>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Delivery Date
+    IF NOT xeket[] IS INITIAL.
+      CLEAR: lw_eket.
+      READ TABLE xeket INTO lw_eket
+                   WITH KEY ebelp = lw_wbs-ebelp.
+      WRITE lw_eket-eindt TO lv_dedat.
+      CONCATENATE '<p>Delivery Date&nbsp;&nbsp;&nbsp;&emsp; :'
+                  '&emsp;'
+                  '<b>'lv_dedat '</b>'
+                  '</p>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ENDIF.
+
+    lw_objtxt-line = '<br>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Only in case of changes/deletions
+    IF xekkn[] IS INITIAL.
+      lw_objtxt-line = 'The below line item(s) were changed/deleted.'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      lw_objtxt-line = '<br><br>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ENDIF.
+
+*--Table displaying line items
+    lw_objtxt-line = '<TABLE border="1"; style="font-family: Calibri;">'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<center>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Additional status column in case of changes/deletions
+    IF xekkn[] IS INITIAL.
+      lw_objtxt-line = '<TR bgcolor="#ccffff"><b><th>&nbsp;Status</th>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      lw_objtxt-line = '<th>Item Description</th>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ELSE.
+      lw_objtxt-line = '<TR bgcolor="#ccffff"><b><th>&nbsp;Item Description</th>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ENDIF.
+
+    lw_objtxt-line = '<th>Account Assignment</th>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<th>&nbsp;Quantity</th>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<th>&nbsp;Net Price</th>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<th>Net value</th>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<th>Gross value</th></b></TR>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Fill in the line items
+    CLEAR: lw_ekpo.
+    LOOP AT xekpo INTO lw_ekpo.
+
+      IF lw_ekpo-ebelp GE lw_wbs-ebelp AND
+         lw_ekpo-ebelp LE lw_wbs-endlp.
+
+      IF NOT xekkn[] IS INITIAL.
+        CLEAR: lw_ekkn.
+        READ TABLE xekkn INTO lw_ekkn
+                     WITH KEY ebelp      = lw_ekpo-ebelp
+                              ps_psp_pnr = lw_wbs-wbcon.
+
+        lv_subrc = sy-subrc.
+      ELSE.
+*--Additional status column in case of changes/deletions
+*--If the line item is deleted
+        IF lw_ekpo-loekz EQ 'L'.
+          CONCATENATE '<TR><td>&nbsp;'
+                      'Deleted'
+                      '</td>'
+                 INTO lw_objtxt-line.
+          APPEND lw_objtxt TO lt_objtxt.
+          CLEAR: lw_objtxt.
+        ELSE.
+*--If the line item is changed
+          CONCATENATE '<TR><td>&nbsp;'
+                      'Changed'
+                      '</td>'
+                 INTO lw_objtxt-line.
+          APPEND lw_objtxt TO lt_objtxt.
+          CLEAR: lw_objtxt.
+        ENDIF.
+
+        CLEAR: lw_ekkn1.
+        READ TABLE lt_ekkn INTO lw_ekkn1
+                     WITH KEY ebelp = lw_ekpo-ebelp
+                              pspnr = lw_wbs-wbcon.
+        lv_subrc = sy-subrc.
+      ENDIF.
+
+      IF lv_subrc IS INITIAL.
+
+      lw_objtxt-line = '<TR>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      CONCATENATE '<td>&nbsp;'
+                  lw_ekpo-txz01
+                  '</td>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+*--GL Account and WBS details.
+      IF lw_ekkn-ps_psp_pnr IS INITIAL.
+        CLEAR: lw_skat.
+        READ TABLE lt_skat INTO lw_skat
+                 WITH KEY saknr = lw_wbs-accnt.
+        CONCATENATE '<td>&nbsp;'
+                    '<b>GL A/c - </b>'
+                    lw_wbs-accnt
+                    ':' lc_space
+                    lw_skat-text
+                    '<br>'
+                    '&nbsp;<b>WBS Element - </b>'
+                    lw_wbs-wbsel
+                    ':' lc_space
+                    lw_prps-post1
+               INTO lw_objtxt-line.
+        APPEND lw_objtxt TO lt_objtxt.
+        CLEAR: lw_objtxt.
+      ELSE.
+        CLEAR: lw_skat.
+        READ TABLE lt_skat INTO lw_skat
+                 WITH KEY saknr = lw_ekkn-sakto.
+        CONCATENATE '<td>&nbsp;'
+                    '<b>GL A/c - </b>'
+                    lw_ekkn-sakto
+                    ':' lc_space
+                    lw_skat-text
+                    '<br>'
+                    '&nbsp;<b>WBS Element - </b>'
+                    lw_wbs-wbsel
+                    ':' lc_space
+                    lw_prps-post1
+               INTO lw_objtxt-line.
+        APPEND lw_objtxt TO lt_objtxt.
+        CLEAR: lw_objtxt.
+      ENDIF.
+
+*--Quantity
+      lv_menge = lw_ekpo-menge.
+      CONCATENATE '<td>&nbsp;'
+                  lv_menge
+                  ' each</td>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+*--Net Price
+      lv_netpr = lw_ekpo-netpr.
+      CONCATENATE '<td>&nbsp;$ '
+                  lv_netpr
+                  '</td>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+*--Net Value
+      lv_netwr = lw_ekpo-netwr.
+      CONCATENATE '<td>&nbsp;$ '
+                   lv_netwr
+                   '</td>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      lv_netval = lv_netval + lw_ekpo-netwr.
+
+*--Gross Price
+      lv_kwert = lw_ekpo-brtwr.
+      CONCATENATE '<td>&nbsp;$ '
+                  lv_kwert
+                  '</td></TR>'
+             INTO lw_objtxt-line.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      lv_grsval = lv_grsval + lw_ekpo-brtwr.
+
+      ELSE.
+        CONTINUE. "EXIT.
+      ENDIF.
+     ENDIF.
+    ENDLOOP.
+
+    lv_netvl = lv_netval.
+    lv_gsval = lv_grsval.
+
+*--Summation record
+    IF xekkn[] IS INITIAL.
+      lw_objtxt-line = '<TR><td>&nbsp;</td>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+
+      lw_objtxt-line = '<td>&nbsp;</td>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ELSE.
+      lw_objtxt-line = '<TR><td>&nbsp;</td>'.
+      APPEND lw_objtxt TO lt_objtxt.
+      CLEAR: lw_objtxt.
+    ENDIF.
+
+    lw_objtxt-line = '<td>&nbsp;</td>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<td>&nbsp;</td>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<td>&nbsp;</td>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Total Net Value
+    CONCATENATE '<td><b>&nbsp;$ '
+                lv_netvl
+                '</b></td>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Total Gross Value
+    CONCATENATE '<td><b>&nbsp;$ '
+                lv_gsval
+                '</b></td></TR>'
+           INTO lw_objtxt-line.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</center>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</table>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</FONT>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</body>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '</html>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+    lw_objtxt-line = '<p>&nbsp;</p>'.
+    APPEND lw_objtxt TO lt_objtxt.
+    CLEAR: lw_objtxt.
+
+*--Describe the body of the message
+    CLEAR lw_packlist.
+    REFRESH lt_packlist.
+    DESCRIBE TABLE lt_objtxt LINES lv_lines.
+    READ TABLE lt_objtxt INTO lw_objtxt INDEX lv_lines.
+*--Fill in the data table
+    lw_data-obj_descr = 'PO notification to WBS Person Responsible'.
+    lw_data-obj_name  = 'PO notification to WBS Person Responsible'.
+    lw_data-sensitivty = 'F'.
+    lw_data-doc_size = ( lv_lines - 1 ) * 255 + strlen( lw_objtxt ).
+
+    lw_packlist-transf_bin = space.
+    lw_packlist-head_start = 1.
+    lw_packlist-head_num   = 0.
+    lw_packlist-body_start = 1.
+    DESCRIBE TABLE lt_objtxt LINES lw_packlist-body_num.
+    lw_packlist-doc_type = 'HTM'.
+    APPEND lw_packlist TO lt_packlist.
+
+*--Send mail with attachment
+  CALL FUNCTION 'SO_DOCUMENT_SEND_API1'
+    EXPORTING
+     document_data                    = lw_data
+     PUT_IN_OUTBOX                    = ' '
+     SENDER_ADDRESS                   = 'sample email'
+     SENDER_ADDRESS_TYPE              = 'SMTP'
+     COMMIT_WORK                      = 'X'
+    TABLES
+     packing_list                     = lt_packlist
+     CONTENTS_TXT                     = lt_objtxt
+     receivers                        = lt_receiver
+   EXCEPTIONS
+     TOO_MANY_RECEIVERS               = 1
+     DOCUMENT_NOT_SENT                = 2
+     DOCUMENT_TYPE_NOT_EXIST          = 3
+     OPERATION_NO_AUTHORIZATION       = 4
+     PARAMETER_ERROR                  = 5
+     X_ERROR                          = 6
+     ENQUEUE_ERROR                    = 7
+     OTHERS                           = 8
+            .
+    IF sy-subrc IS INITIAL.
+
+    ENDIF.
+
+    CLEAR: lv_netvl, lv_gsval, lv_netval, lv_grsval,
+           lv_netwr, lv_netpr, lv_kwert, lv_menge.
+    CLEAR: lw_wbs, lw_packlist, lw_objtxt, lw_users,
+           lw_receiver, lw_data, lw_ekpo,
+           lw_skat, lw_ekkn, lw_prps, lw_p0105.
+    REFRESH: lt_packlist, lt_objtxt, lt_receiver.
+
+  ENDLOOP.
