@@ -1,0 +1,204 @@
+form fill_data .
+
+*  Get Shift Plan Definition.
+  perform fill_interal_t77ed.
+  data : fild_no  type sy-index,
+         lv_wkavg     type wkavg,
+         lv_indicator type char10, " added by reddygid.TR D02K919542
+         lv_hours     type tistd, " added by reddygid.TR D02K919542
+         lv_totlea    type tistd, " added by reddygid.TR D02K919542
+         lv_leave_hrs type tistd, " added by reddygid.TR D02K919542
+         lv_diff      TYPE sy-index,
+         lv_no_of_days TYPE i,
+         lf_flag      TYPE flag.
+  field-symbols :  <fs_indicator> type any.
+
+  clear:   lv_leave_hrs , lv_totlea. "added by reddygid. TR D02K919542
+  loop at gt_emp_data assigning field-symbol(<fs_emdata>).
+
+    field-symbols :  <fs_dienst_txt> type any.
+
+    assign component  1 of structure <wa>  to field-symbol(<fs_fpernr>) .
+    <fs_fpernr> = <fs_emdata>-pernr .
+
+    assign component  2 of structure <wa>  to field-symbol(<fs_fnachn>) .
+    <fs_fnachn> =   <fs_emdata>-nachn .
+
+    assign component  3 of structure <wa>  to field-symbol(<fs_fvorna>) .
+    <fs_fvorna> =  <fs_emdata>-vorna .
+
+    assign component  4 of structure <wa>  to field-symbol(<fs_frufnm>) .
+    <fs_frufnm> =  <fs_emdata>-rufnm .
+
+    assign component  5 of structure <wa>  to field-symbol(<fs_fptext>) .
+    <fs_fptext> = <fs_emdata>-ptext .
+
+    assign component  6 of structure <wa>  to field-symbol(<fs_fbtext>) .
+    <fs_fbtext> =  <fs_emdata>-btext .
+
+    assign component  7 of structure <wa>  to field-symbol(<fs_fkostl>) .
+    <fs_fkostl> =  <fs_emdata>-kostl .
+
+    assign component  8 of structure <wa>  to field-symbol(<fs_fktext>) .
+    <fs_fktext> =  <fs_emdata>-ktext .
+
+    assign component  9 of structure <wa>  to field-symbol(<fs_fstext>) .
+    <fs_fstext> =  <fs_emdata>-stext.
+
+    assign component  10 of structure <wa>  to field-symbol(<fs_ftrfgr>) .
+    <fs_ftrfgr> =  <fs_emdata>-trfgr.
+
+    assign component  11 of structure <wa>  to field-symbol(<fs_ftrfst>) .
+    <fs_ftrfst> =  <fs_emdata>-trfst.
+
+    assign component  12 of structure <wa>  to field-symbol(<fs_fbetrg>) .
+    <fs_fbetrg> =  <fs_emdata>-betrg.
+
+    assign component  13 of structure <wa>  to field-symbol(<fs_fstvor>) .
+    <fs_fstvor> =  <fs_emdata>-stvor .
+
+    assign component  14 of structure <wa>  to field-symbol(<fs_fschkz>) .
+    <fs_fschkz> =  <fs_emdata>-schkz .
+
+* Start  work schdule
+*********************************************************
+    perform create_sollplan using <fs_emdata>-pernr <fs_emdata>-orgeh p_begda p_endda .
+    perform fill_dienste .
+    perform fill_dienst_list_tab .
+
+    fild_no = 15 .
+* Begin of changes by KURUVAIA - 31.05.2017 - DE5K907004
+    lv_no_of_days = gv_no_of_days.
+** If no workschedule is found fill in the data with 0.00
+    IF gt_dienst_list_tab[] IS INITIAL.
+      DO lv_no_of_days TIMES.
+        ASSIGN COMPONENT fild_no OF STRUCTURE <wa> TO <fs_dienst_txt> .
+        <fs_dienst_txt> = '0.00'.
+        fild_no = fild_no + 1 .
+      ENDDO.
+    ELSE.
+
+**Begin of change by vollar #DE5K914401
+clear gs_dienst_list_tab .
+read table gt_dienst_list_tab into gs_dienst_list_tab index 1 .
+IF sy-subrc IS INITIAL.
+    IF gs_dienst_list_tab-date GT p_begda.
+       lv_diff = gs_dienst_list_tab-date - p_begda.
+           lv_no_of_days = lv_no_of_days - lv_diff.
+           DO lv_diff TIMES.
+             ASSIGN COMPONENT fild_no OF STRUCTURE <wa> TO <fs_dienst_txt> .
+            <fs_dienst_txt> = '0.00'.
+            fild_no = fild_no + 1 .
+          ENDDO.
+    ENDIF.
+ENDIF.
+**End of change by vollar #DE5K914401
+*    do gv_no_of_days times .
+    do lv_no_of_days times.
+* End of changes by KURUVAIA - 31.05.2017 - DE5K907004
+      clear gs_dienst_list_tab .
+      read table gt_dienst_list_tab into gs_dienst_list_tab index sy-index .
+* Begin of changes by KURUVAIA - 31.05.2017 - DE5K907004
+** If the employee start date is greater than reporting start date
+** the dates and data for workschedule to managed in the output.
+      IF sy-subrc IS INITIAL.
+**Begin of change by vollar #DE5K914401
+*         IF gs_dienst_list_tab-date GT p_begda AND
+*            lf_flag IS INITIAL AND
+*            sy-index EQ 1.
+*           lf_flag = 'X'.
+*           lv_diff = gs_dienst_list_tab-date - p_begda.
+*           lv_no_of_days = lv_no_of_days - lv_diff.
+*           DO lv_diff TIMES.
+*             ASSIGN COMPONENT fild_no OF STRUCTURE <wa> TO <fs_dienst_txt> .
+*            <fs_dienst_txt> = '0.00'.
+*            fild_no = fild_no + 1 .
+*           ENDDO.
+*        ENDIF.
+**End of change by vollar #DE5K914401
+* End of changes by KURUVAIA - 31.05.2017 - DE5K907004
+
+* Begin of change by reddygid on 18/10/2016 TR D02K919542
+      clear :lv_indicator , lv_hours, lv_leave_hrs.
+*     Check if a give day is public holiday or leave taken if the day is not OFF .
+      if gs_dienst_list_tab-sollprog ne 'OFF'." AND gs_dienst_list_tab-sollprog ne SPACE.
+        perform get_leave_date using  gs_pdpsp-pernr gs_dienst_list_tab-date
+                               changing lv_indicator lv_hours lv_leave_hrs.
+        lv_totlea = lv_totlea + lv_leave_hrs.
+      endif.
+      if lv_indicator is not initial.
+        assign component   fild_no of structure <wa> to <fs_indicator>.
+        <fs_indicator> = lv_indicator.
+        lv_wkavg = lv_wkavg + lv_hours.
+      else.
+* End of change by reddygid on 18/10/2016 TR D02K919542.
+
+*      add total hours of run period
+        assign component   fild_no of structure <wa>  to <fs_dienst_txt> .
+      <fs_dienst_txt> = '0.00' .
+      if gs_dienst_list_tab-dienst_txt ne space  and  gs_dienst_list_tab-dienst_txt ne 'Day off'.
+        <fs_dienst_txt> = gs_dienst_list_tab-dienst_stdaz  .
+        lv_wkavg = lv_wkavg + gs_dienst_list_tab-dienst_stdaz.
+        endif.
+* Begin of change by reddygid on 18/10/2016 TR D02K919542
+      endif.
+* End of change by reddygid on 18/10/2016 TR D02K919542
+      ELSE.
+        ASSIGN COMPONENT fild_no OF STRUCTURE <wa> TO <fs_dienst_txt> .
+        <fs_dienst_txt> = '0.00'.
+      ENDIF. " Changes by KURUVAIA - 31.05.2017 - DE5K907004
+
+      fild_no =   fild_no  + 1 .
+
+    enddo .
+*  end  work schdule
+   ENDIF.   " Changes by KURUVAIA - 31.05.2017 - DE5K907004
+*********************************************************
+    assign component   fild_no  of structure <wa>  to field-symbol(<fs_fpaid_hrs>) .
+    <fs_fpaid_hrs> =  lv_wkavg .
+
+* Begin of change by reddygid on 18/10/2016 TR D02K919542
+*  total Leave Taken  hours.
+    fild_no =   fild_no  + 1 .
+    assign component   fild_no  of structure <wa>  to field-symbol(<fs_leave_hrs>) .
+    <fs_leave_hrs> =   lv_totlea  .
+* end of change by reddygid on 18/10/2016 TR D02K919542
+
+    fild_no =   fild_no  + 1 .
+    assign component  fild_no of structure <wa>  to field-symbol(<fs_total_hrs>) .
+    <fs_total_hrs> =  <fs_emdata>-total_hrs .
+
+    fild_no =   fild_no  + 1 .
+    assign component   fild_no  of structure <wa>  to field-symbol(<fs_diff_hrs>) .
+* Begin of change by reddygid on 18/10/2016 TR D02K919542
+*    <fs_diff_hrs> = lv_wkavg - <fs_emdata>-total_hrs .
+    <fs_diff_hrs> = ( lv_wkavg + lv_totlea ) - <fs_emdata>-total_hrs .
+
+* End of change by reddygid on 18/10/2016 TR D02K919542
+
+    fild_no =   fild_no  + 1 .
+    assign component   fild_no of structure <wa>  to field-symbol(<fs_fdat01>) .
+    <fs_fdat01> =  <fs_emdata>-dat01 .
+
+    fild_no =   fild_no  + 1 .
+    assign component fild_no  of structure <wa>  to field-symbol(<fs_ftermi>) .
+    <fs_ftermi> = <fs_emdata>-termi .
+
+    fild_no =   fild_no  + 1 .
+    assign component fild_no  of structure <wa>  to field-symbol(<fs_fcomment>) .
+    <fs_fcomment> = <fs_emdata>-comments .
+
+    fild_no =   fild_no  + 1 .
+    assign component fild_no  of structure <wa>  to field-symbol(<fs_fpstart>) .
+    <fs_fpstart> = <fs_emdata>-pstart.
+
+    fild_no =   fild_no  + 1 .
+    assign component fild_no  of structure <wa>  to field-symbol(<fs_fpend>) .
+    <fs_fpend> = <fs_emdata>-pend .
+
+    append <wa> to <it_table> .
+    FREE: <wa>.
+    clear : lv_wkavg, fild_no, lf_flag.
+    clear lv_totlea. " added by reddygid on 18/10/2016 TR D02K919542
+  endloop .
+endform.
