@@ -1,0 +1,1825 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFI_JOURNAL_UPLOAD_FORM
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  MODIFY_SCREEN
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM modify_screen .
+**Display reversal date only if the accrual journal
+**radion button is selected
+  LOOP AT SCREEN.
+    IF p_accrl EQ gc_x.
+      IF screen-group1 EQ gc_dat.
+        screen-active = 1.
+        screen-invisible = 0.
+        MODIFY SCREEN.
+      ENDIF.
+*    ENDIF.
+    ELSE.
+      IF screen-group1 EQ gc_dat.
+        screen-active = 0.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDIF.
+
+*    IF p_dload EQ gc_x.
+*      IF screen-group1 EQ gc_down.
+*        screen-active = 1.
+**        screen-invisible = 0.
+*        MODIFY SCREEN.
+*      ENDIF.
+*    ELSE.
+*      IF screen-group1 EQ gc_down.
+*        screen-active = 0.
+*        MODIFY SCREEN.
+*      ENDIF.
+*    ENDIF.
+*
+*    IF p_upl EQ gc_x.
+*      IF screen-group1 EQ gc_up.
+*        screen-active = 1.
+**        screen-invisible = 0.
+*        MODIFY SCREEN.
+*      ENDIF.
+*    ELSE.
+*      IF screen-group1 EQ gc_up.
+*        screen-active = 0.
+*        MODIFY SCREEN.
+*      ENDIF.
+*    ENDIF.
+*
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_FILE_NAME
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM get_file_name USING lv_file .
+
+  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+    EXPORTING
+      fileoperation = 'W'
+    CHANGING
+      file_name     = lv_file
+    EXCEPTIONS
+      mask_too_long = 1
+      OTHERS        = 2.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPLOAD_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM upload_file USING pv_format .
+*-- Get the input file
+  DATA: lv_file TYPE string.
+
+  lv_file = p_file.
+  IF lv_file CP pv_format.
+*  REFRESH:gt_input.
+    CALL FUNCTION 'GUI_UPLOAD'
+      EXPORTING
+        filename                = lv_file
+        filetype                = 'ASC'
+        has_field_separator     = abap_true
+      TABLES
+        data_tab                = gt_input
+* CHANGING
+*       ISSCANPERFORMED         = ' '
+      EXCEPTIONS
+        file_open_error         = 1
+        file_read_error         = 2
+        no_batch                = 3
+        gui_refuse_filetransfer = 4
+        invalid_type            = 5
+        no_authority            = 6
+        unknown_error           = 7
+        bad_data_format         = 8
+        header_not_allowed      = 9
+        separator_not_allowed   = 10
+        header_too_long         = 11
+        unknown_dp_error        = 12
+        access_denied           = 13
+        dp_out_of_memory        = 14
+        disk_full               = 15
+        dp_timeout              = 16
+        OTHERS                  = 17.
+    IF sy-subrc <> 0.
+    ENDIF.
+
+  ELSE.
+    MESSAGE 'Please upload tab delimited(.txt) file' TYPE 'I'.
+    EXIT.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  READ_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM read_data .
+*  CONSTANTS: lc_tab(1)   TYPE C VALUE ','.
+  DATA:lv_wrbtr         TYPE wrbtr, "string,
+       lv_fwste         TYPE fwste, "string,
+       ls_input         TYPE ty_input,
+       lv_tabix         TYPE sy-tabix VALUE '0',
+       lv_count(3)      TYPE n,
+       lv_count_line(3) TYPE n,
+       lv_line(3)       TYPE n,
+       lv_sum           TYPE wrbtr,
+       lv_identifier(3) TYPE c.
+
+  CONSTANTS: lc_40 TYPE bschl VALUE '40',
+             lc_50 TYPE bschl VALUE '50'.
+
+
+  "delete first 6 lines in the file
+  DELETE gt_input FROM 1 TO 6.
+  CLEAR:gs_input,gv_flag.
+*Split the data and move to internal table
+  LOOP AT gt_input INTO gs_input.
+*by rahulb
+    AT NEW identifier.
+      gv_flag = gv_flag + 1.
+    ENDAT.
+*by rahulb
+    MOVE-CORRESPONDING gs_input TO ls_input.
+** Begin of changes by Bonse, 03-Jul-2017
+* Authority check for company code
+    AUTHORITY-CHECK OBJECT 'F_BKPF_BUK'
+    ID 'BUKRS' FIELD ls_input-bukrs.
+    IF sy-subrc NE 0.
+      MESSAGE text-053 && | | && ls_input-bukrs TYPE gc_e.
+    ENDIF.
+** End of changes by Bonse, 03-Jul-2017
+    TRANSLATE ls_input-identifier TO UPPER CASE.
+
+    lv_identifier = gs_input-identifier.
+
+    IF lv_identifier = gs_input-identifier.
+
+      MOVE: ls_input-budat   TO gs_data-bldat,
+          ls_input-budat     TO       gs_data-budat,
+          ls_input-blart     TO       gs_data-blart,
+          ls_input-bukrs     TO       gs_data-bukrs,
+          ls_input-xblnr     TO       gs_data-xblnr,
+          ls_input-bktxt     TO       gs_data-bktxt,
+          ls_input-newko     TO       gs_data-newko,
+          ls_input-wrbtr     TO       lv_wrbtr,
+          ls_input-mwskz     TO       gs_data-mwskz,
+*          ls_input-xmwst     TO       gs_data-xmwst,
+          ls_input-fwste     TO       lv_fwste,
+          ls_input-prctr     TO       gs_data-prctr,
+          ls_input-kostl     TO       gs_data-kostl,
+          ls_input-aufnr     TO       gs_data-aufnr,
+          ls_input-ps_posid  TO       gs_data-ps_posid,
+          ls_input-nplnr     TO       gs_data-nplnr,
+          ls_input-zuonr     TO       gs_data-zuonr,
+          ls_input-vbund     TO       gs_data-vbund,
+          ls_input-xref1     TO       gs_data-xref1,
+          ls_input-xref2     TO       gs_data-xref2,
+          ls_input-sgtxt     TO       gs_data-sgtxt,
+          ls_input-newbk     TO       gs_data-newbk,
+          ls_input-swenr     TO       gs_data-swenr,
+          ls_input-sgenr     TO       gs_data-sgenr,
+          ls_input-sgrnr     TO       gs_data-sgrnr,
+          ls_input-smenr     TO       gs_data-smenr,
+          ls_input-snksl     TO       gs_data-snksl,
+          ls_input-sempsl    TO       gs_data-sempsl,
+          ls_input-dabrz     TO       gs_data-dabrz.
+
+      ADD 1 TO lv_count.
+
+*IF the amount is negative consider as debit(50) else credit(40)
+      IF lv_wrbtr > 0.
+        MOVE lc_40 TO gs_data-bschl.
+      ELSE.
+        MOVE lc_50  TO gs_data-bschl.
+      ENDIF.
+      MOVE: lv_wrbtr TO gs_data-wrbtr.
+      MOVE lv_fwste TO gs_data-fwste.
+      lv_sum = lv_sum + gs_data-wrbtr.
+
+      MOVE:
+       ls_input-identifier TO gs_data-identifier,
+       lv_count TO gs_data-count.
+
+*--Validate Tax Code
+      PERFORM zvalidate_tax_code USING gs_data.
+
+*--Validate Profit Center for posting
+      PERFORM zvalidate_profit_centre USING gs_data.
+
+      APPEND gs_data TO gt_data.
+      CLEAR:lv_wrbtr,lv_fwste.
+
+    ENDIF.
+
+*Check if the sum of line items quantify is equal to zero or not
+    AT END OF identifier.
+      IF lv_sum NE 0.
+        MESSAGE text-006 TYPE gc_e.
+      ENDIF.
+
+    ENDAT.
+
+  ENDLOOP.
+
+*check if there are more that 999 line items in the file then raise an error
+  IF lv_count GT 999.
+    MESSAGE text-005 TYPE gc_e.
+  ENDIF.
+
+  CLEAR:lv_identifier,lv_count.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&      Form  POST_DOCUMENT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM post_document USING pt_data.
+
+  PERFORM prepare_data.
+
+ENDFORM.
+**&---------------------------------------------------------------------*
+*&      Form  ALV_DISPLAY
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM alv_display .
+
+  SORT gt_output.
+  DELETE ADJACENT DUPLICATES FROM gt_output COMPARING MESSAGE.
+
+  PERFORM field_catalog.
+
+*  IF gt_return IS NOT INITIAL.
+
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program       = sy-repid
+      i_callback_pf_status_set = 'CF_SET_ALV_STATUS'
+      i_callback_user_command  = 'CF_USER_ALV_COMMAND'
+      it_fieldcat              = gt_fieldcat
+      i_default                = 'X'
+      i_save                   = 'X'
+    TABLES
+      t_outtab           = gt_output.
+
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+*  ENDIF.
+ENDFORM.
+**&---------------------------------------------------------------------*
+*&      Form  PREPARE_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM prepare_data.
+
+  DATA:lv_ident(3)  TYPE c,
+       ls_data      TYPE ty_data,
+       lv_count     TYPE posnr_acc VALUE 1,
+       lv_cnt       TYPE posnr_acc VALUE 1,
+       lt_taxdet    TYPE  TABLE OF rtax1u15,
+       ls_taxdet    TYPE rtax1u15,
+       lv_txn       TYPE i,
+       lv_taxcode   TYPE mwskz,
+       lv_wrbtr     TYPE wrbtr,
+       ls_bkpf      TYPE bkpf,
+       ls_bseg      TYPE bseg,
+       lv_realdate  TYPE dabrbez,
+       lv_tax_count TYPE posnr_acc,
+       lt_data_temp TYPE TABLE OF  ty_data,
+       ls_data_temp LIKE LINE OF lt_data_temp,
+       lv_tax_code_count TYPE i,
+       lv_calculate_tax  TYPE c.
+
+  CONSTANTS: lc_waers    TYPE waers VALUE 'AUD'.
+
+  CLEAR:gs_data,lv_ident,ls_data, gv_posting.
+
+  IF NOT gt_output[] IS INITIAL.
+    gt_errors[] = gt_output[].
+  ENDIF.
+** Begin of changes | Bonse | 04-Jul-2017
+  DELETE gt_data WHERE identifier = ' '.
+** End of changes | Bonse | 04-Jul-2017
+  DESCRIBE TABLE gt_data LINES lv_txn.
+  lv_tax_count = lv_txn + 1.
+
+  LOOP AT gt_data INTO gs_data.
+    CLEAR ls_taxdet.
+    MOVE-CORRESPONDING gs_data TO ls_data.
+*begin of changes,vijayarl,08/07/2017
+*ignore tax if all line items have same tax code
+*do this if there's any change in identifier
+    AT NEW identifier.
+      REFRESH :  lt_data_temp.
+      CLEAR : lv_calculate_tax,lv_tax_code_count.
+*move gt_data table to temporary table
+      lt_data_temp = gt_data.
+*keep only those records that have same identifier that is under process
+      DELETE lt_data_temp WHERE identifier NE ls_data-identifier.
+*sort by tax code
+      SORT lt_data_temp BY mwskz.
+*remove duplicate records if any
+      DELETE ADJACENT DUPLICATES FROM lt_data_temp COMPARING mwskz.
+*count the number of tax codes
+      DESCRIBE TABLE lt_data_temp LINES lv_tax_code_count.
+*if there are multiple tax code then calculate tax
+      IF lv_tax_code_count GE 2.
+        lv_calculate_tax = abap_true.
+*if tax code is same throughout then don't calculate tax
+      ELSE.
+        lv_calculate_tax = space.
+      ENDIF.
+    ENDAT.
+*end of chagnes,vijayarl,08/07/2017
+
+    lv_ident = ls_data-identifier.
+
+    IF lv_ident = ls_data-identifier.
+
+
+      gs_documentheader-obj_type   = 'BKPFF'.
+      gs_documentheader-obj_sys    = sy-sysid.
+      gs_documentheader-username   = sy-uname.
+      gs_documentheader-header_txt = ls_data-bktxt.
+      gs_documentheader-comp_code  = ls_data-bukrs.
+    CONCATENATE ls_data-bldat+6(4) ls_data-bldat+3(2) ls_data-bldat+0(2)
+    INTO gs_documentheader-doc_date.
+
+   CONCATENATE ls_data-budat+6(4)  ls_data-budat+3(2) ls_data-budat+0(2)
+  INTO gs_documentheader-pstng_date.
+
+*      gs_documentheader-doc_date   = ls_data-bldat.
+*      gs_documentheader-pstng_date = ls_data-budat.
+*--Assign the document type field for further validations.
+      gv_blart = ls_data-blart.
+
+      gs_documentheader-doc_type = ls_data-blart.
+      gs_documentheader-ref_doc_no = ls_data-xblnr.
+
+      MOVE-CORRESPONDING ls_data TO ls_bkpf.
+*Convert costcentre,profitcenter,account and order numbers
+      PERFORM convert_value CHANGING ls_data-kostl.
+      PERFORM convert_value CHANGING ls_data-prctr.
+      PERFORM convert_value CHANGING ls_data-newko.
+      PERFORM convert_value CHANGING ls_data-aufnr.
+
+      "begin of changes,vijayarl,08/07/2017
+      IF lv_calculate_tax = abap_true.
+        lv_taxcode = ls_data-mwskz.
+      ELSE.
+        lv_taxcode = space.
+      ENDIF.
+      "end of changes,vijayarl,08/07/2017
+
+*Calculate tax if valid tax is entered.
+      IF ls_data-blart EQ gc_za OR ls_data-blart EQ gc_cc.
+        IF lv_taxcode IS NOT INITIAL.
+          REFRESH:lt_taxdet.
+          CALL FUNCTION 'CALCULATE_TAX_FROM_GROSSAMOUNT'
+            EXPORTING
+              i_bukrs                 = ls_data-bukrs
+              i_mwskz                 = lv_taxcode
+              i_waers                 = lc_waers
+              i_wrbtr                 = ls_data-wrbtr
+            TABLES
+              t_mwdat                 = lt_taxdet
+            EXCEPTIONS
+              bukrs_not_found         = 1
+              country_not_found       = 2
+              mwskz_not_defined       = 3
+              mwskz_not_valid         = 4
+              account_not_found       = 5
+              different_discount_base = 6
+              different_tax_base      = 7
+              txjcd_not_valid         = 8
+              not_found               = 9
+              ktosl_not_found         = 10
+              kalsm_not_found         = 11
+              parameter_error         = 12
+              knumh_not_found         = 13
+              kschl_not_found         = 14
+              unknown_error           = 15
+              OTHERS                  = 16.
+
+
+          IF sy-subrc = 0.
+            READ TABLE lt_taxdet INTO ls_taxdet INDEX 1.
+            IF sy-subrc = 0.
+*check if tax line item already created for the tax code
+              READ TABLE gt_accounttax INTO gs_accounttax WITH KEY
+                   tax_code = ls_data-mwskz.
+              IF sy-subrc EQ 0.
+*if already exists add the tax amounts
+                CLEAR: gs_currencyamount.
+                READ TABLE gt_currencyamount INTO gs_currencyamount
+                WITH KEY itemno_acc = gs_accounttax-itemno_acc.
+                IF sy-subrc EQ 0.
+gs_currencyamount-amt_doccur = gs_currencyamount-amt_doccur + ls_taxdet-wmwst.
+gs_currencyamount-amt_base = gs_currencyamount-amt_base + ls_taxdet-kawrt.
+gs_currencyamount-tax_amt = gs_currencyamount-tax_amt + ls_taxdet-wmwst.
+*update the recode in currency amount parameter
+                  MODIFY TABLE gt_currencyamount FROM gs_currencyamount.
+                  CLEAR gs_currencyamount.
+                ENDIF.
+
+*If tax amount is not there then calculate the tax
+              ELSE.
+
+                gs_accounttax-itemno_acc = lv_tax_count.
+                gs_accounttax-gl_account = ls_taxdet-hkont.
+                gs_accounttax-tax_code   = lv_taxcode.
+                gs_accounttax-tax_rate   = ls_taxdet-msatz.
+                gs_accounttax-cond_key = ls_taxdet-kschl.  "GM
+                APPEND gs_accounttax TO gt_accounttax.
+                CLEAR gs_accounttax.
+*prepare currency details based on the tax
+                gs_currencyamount-itemno_acc   = lv_tax_count.
+                gs_currencyamount-currency     = lc_waers.
+                gs_currencyamount-currency_iso = lc_waers.
+                gs_currencyamount-amt_doccur = ls_taxdet-wmwst.
+                gs_currencyamount-amt_base   = ls_taxdet-kawrt.
+                gs_currencyamount-tax_amt    =  ls_taxdet-wmwst.
+
+                gs_currencyamount-amt_base = ls_data-wrbtr .
+                APPEND  gs_currencyamount TO  gt_currencyamount.
+                lv_tax_count  =      lv_tax_count + 1.
+                CLEAR:  gs_currencyamount.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+
+        gs_currencyamount-itemno_acc = lv_count.
+        gs_currencyamount-currency   = lc_waers.
+        gs_currencyamount-currency_iso   = lc_waers.
+
+        IF ls_data-wrbtr > 0.
+         gs_currencyamount-amt_doccur = ls_data-wrbtr - ls_taxdet-wmwst.
+*        ELSEIF ls_data-wrbtr < 0. " Bonse | 04-Jul-2017
+        ELSEIF ls_data-wrbtr < 0 AND lv_taxcode IS INITIAL.
+*            lv_wrbtr  = ( ls_data-wrbtr + ls_taxdet-wmwst ) * -1.
+          gs_currencyamount-amt_doccur = ls_data-wrbtr.
+** Begin of changes | Bonse| 04-Jul-2017
+        ELSEIF ls_data-wrbtr < 0 AND lv_taxcode IS NOT INITIAL.
+         gs_currencyamount-amt_doccur = ls_data-wrbtr - ls_taxdet-wmwst.
+* End of changes | Bonse | 04-Jul-2017
+        ENDIF.
+        APPEND gs_currencyamount TO gt_currencyamount.
+        CLEAR gs_currencyamount.
+      ENDIF.
+
+*prepare currency details for parking document only for SA and AB type
+      IF ls_data-blart EQ gc_ab OR ls_data-blart EQ gc_sa.
+        gs_currencyamount-itemno_acc   = lv_count.
+        gs_currencyamount-currency     = lc_waers.
+        gs_currencyamount-currency_iso = lc_waers.
+        gs_currencyamount-amt_doccur = ls_data-wrbtr.
+        gs_currencyamount-amt_base   = ls_data-wrbtr.
+        APPEND gs_currencyamount TO gt_currencyamount.
+        CLEAR gs_currencyamount.
+      ENDIF.
+*End of trail
+*prepare accounting gl data
+      gs_accountgl-itemno_acc = lv_count.
+      gs_accountgl-comp_code   = ls_data-bukrs.
+      gs_accountgl-gl_account  = ls_data-newko.
+      gs_accountgl-costcenter  = ls_data-kostl.
+      gs_accountgl-profit_ctr  = ls_data-prctr.
+      gs_accountgl-wbs_element = ls_data-ps_posid.
+      gs_accountgl-orderid     = ls_data-aufnr.
+      gs_accountgl-alloc_nmbr  = ls_data-zuonr.
+      gs_accountgl-trade_id    = ls_data-vbund.
+      gs_accountgl-item_text   = ls_data-sgtxt.
+      gs_accountgl-ref_key_1   = ls_data-xref1.
+      gs_accountgl-ref_key_2   = ls_data-xref2.
+      gs_accountgl-tax_code    = ls_data-mwskz.
+
+*pass second company code for cross company journal
+      IF ls_data-blart EQ gc_cc.
+        gs_accountgl-comp_code   = ls_data-newbk.
+      ENDIF.
+
+      APPEND gs_accountgl TO gt_accountgl.
+      CLEAR gs_accountgl.
+
+*Append only if realestate fields are filled in the file
+*Prepare real estate fiels
+      IF ls_data-swenr IS NOT INITIAL OR ls_data-sgenr IS NOT INITIAL
+        OR ls_data-sgrnr IS NOT INITIAL OR ls_data-smenr IS NOT INITIAL
+       OR ls_data-snksl IS NOT INITIAL OR ls_data-sempsl IS NOT INITIAL.
+        PERFORM conversion USING ls_data-swenr
+                           CHANGING ls_data-swenr.
+        PERFORM conversion USING ls_data-sgenr
+                           CHANGING ls_data-sgenr.
+        PERFORM conversion USING ls_data-sgrnr
+                           CHANGING ls_data-sgrnr.
+        PERFORM conversion USING ls_data-smenr
+                           CHANGING ls_data-smenr.
+        PERFORM conversion USING ls_data-snksl
+                           CHANGING ls_data-snksl.
+        PERFORM conversion USING ls_data-sempsl
+                           CHANGING ls_data-sempsl.
+        gs_realestate-itemno_acc = lv_count.
+        gs_realestate-business_entity = ls_data-swenr.
+        gs_realestate-building        = ls_data-sgenr.
+        gs_realestate-property        = ls_data-sgrnr.
+        gs_realestate-rental_object   = ls_data-smenr.
+        gs_realestate-serv_charge_key = ls_data-snksl.
+        gs_realestate-settlement_unit = ls_data-sempsl.
+
+        IF ls_data-dabrz EQ space.
+          gs_realestate-ref_date        = 00000000.
+        ELSE.
+          gs_realestate-ref_date        = ls_data-dabrz.
+        ENDIF.
+        APPEND gs_realestate TO gt_realestate.
+        CLEAR:gs_realestate.
+      ELSE.
+
+      ENDIF.
+
+      lv_count = lv_count + 1.
+
+    ENDIF.
+
+    AT END OF identifier.
+*Cross company journal posting
+      IF ls_data-blart EQ gc_cc AND p_cross EQ gc_x
+        AND p_accrl NE gc_x AND p_park  NE gc_x.
+
+        PERFORM document_post.
+
+*park the journal document
+ELSEIF  ( ls_data-blart EQ gc_ab OR ls_data-blart  EQ gc_sa )  AND p_park EQ gc_x
+AND p_accrl NE gc_x AND p_cross NE gc_x.
+        PERFORM park_document.
+
+*Accrual Journal posting
+      ELSEIF ls_data-blart EQ gc_za AND p_accrl EQ gc_x
+        AND p_park  NE  gc_x AND p_cross  NE  gc_x.
+        PERFORM accrual_post.
+      ELSE.
+*Raise error message if worong jounal is selected
+        MESSAGE text-015 TYPE gc_e.
+      ENDIF.
+*      ENDIF.
+    ENDAT.
+
+  ENDLOOP.
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CONVERT_VALUE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      <--P_GS_DATA_KOSTL  text
+*----------------------------------------------------------------------*
+FORM convert_value  CHANGING pv_value.
+
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input  = pv_value
+    IMPORTING
+      output = pv_value.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DOCUMENT_POST
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM document_post .
+  DATA:lv_object    TYPE  bapiache02-obj_key,
+       lt_extension TYPE TABLE OF bapiparex,
+       ls_extension TYPE bapiparex,
+       l_objectid   TYPE cdhdr-objectid.
+
+*  all tables filled - now call bapi.
+*Check the calculate tax checkbox if XMWST value is provided in the file
+
+    ls_extension-structure = 'ACCIT'.
+    ls_extension-valuepart3 =  'X'.
+    APPEND ls_extension TO lt_extension.
+    CLEAR:ls_extension.
+
+    REFRESH:gt_return.
+    CALL FUNCTION 'BAPI_ACC_DOCUMENT_CHECK'
+      EXPORTING
+        documentheader = gs_documentheader
+      TABLES
+        accountgl      = gt_accountgl
+        accounttax     = gt_accounttax
+        currencyamount = gt_currencyamount
+        realestate     = gt_realestate
+        return         = gt_return.
+
+    CLEAR:gs_return, gv_errflg.
+    LOOP AT gt_return INTO gs_return.
+      IF gs_return-type EQ gc_e.
+        gs_output-type    = gs_return-type.
+        gs_output-message = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+        gv_errflg = abap_true.
+      ELSEIF gs_return-type EQ gc_s.
+        IF gt_output[] IS INITIAL AND
+           p_test EQ abap_true.
+          gs_output-type    = gs_return-type.
+          gs_output-message_v2 = gs_return-message_v2.
+          gs_output-message = text-003.
+        ENDIF.
+      ELSEIF gs_return-type EQ 'I'.
+        gs_output-type    = gs_return-type.
+        gs_output-message  = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+      ENDIF.
+      APPEND gs_output TO gt_output.
+      CLEAR:gs_output,gs_return.
+    ENDLOOP.
+*    by rahulb
+    DELETE gt_output WHERE type EQ space. "by rahulb
+*    by rahulb
+    IF gv_errflg NE abap_true AND
+       p_test NE abap_true .
+
+      IF ( p_accrl EQ gc_x OR p_cross EQ gc_x ) AND
+         gt_errors[] IS INITIAL.
+
+      REFRESH: lt_extension.
+*    Error are checked already in CALL_GL_CHECK_POST...so need to
+*    call the bapi in test mode.
+*     No errors..good..Post the entries
+
+*Park the document for AB and SA document if test checkbox is not checked.
+      IF gv_blart EQ gc_ab OR
+         gv_blart EQ gc_sa.
+        IF p_test EQ abap_false.
+          gs_documentheader-doc_status = '2'.
+        ENDIF.
+      ENDIF.
+
+*Check the calculate tax checkbox if valid if that is provided in the file
+
+      ls_extension-structure = 'ACCIT'.
+      ls_extension-valuepart3 =  'X'.
+
+      APPEND ls_extension TO lt_extension.
+      CLEAR:ls_extension.
+
+      REFRESH:gt_return.
+      CALL FUNCTION 'BAPI_ACC_DOCUMENT_POST'
+        EXPORTING
+          documentheader = gs_documentheader
+        TABLES
+          accountgl      = gt_accountgl
+          accounttax     = gt_accounttax
+          currencyamount = gt_currencyamount
+          realestate     = gt_realestate
+          return         = gt_return.
+
+      REFRESH:gt_accountgl,gt_currencyamount,
+              gt_accounttax,gt_realestate,gt_extension2..
+      CLEAR:gs_documentheader.
+
+      CLEAR:gs_return.
+      LOOP AT gt_return INTO gs_return.
+        IF gs_return-type EQ gc_e.
+          gs_output-type    = gs_return-type.
+          gs_output-message = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ELSEIF gs_return-type EQ gc_s.
+          gs_output-type   = gs_return-type.
+          gs_output-message = gs_return-message_v2.
+          gs_output-message_v2 = gs_return-message_v2.
+          CONCATENATE text-013 gs_return-message_v2+0(10)
+          text-009 gs_return-message_v2+10(4) text-010 INTO
+          gs_output-message SEPARATED BY space.
+          gs_output-log_no = gs_return-message_v2+0(10).
+        ELSEIF gs_return-type EQ 'I'.
+          gs_output-type    = gs_return-type.
+          gs_output-message  = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ENDIF.
+
+        APPEND gs_output TO gt_output.
+        CLEAR:gs_output.
+      ENDLOOP.
+      DELETE gt_output WHERE type EQ space.   "by rahulb 04/12/2017
+*IF there are no errors post the document
+*    IF gt_return IS INITIAL.
+      CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+*    ENDIF.
+*  ENDIF. " Bonse
+      WAIT UP TO 2 SECONDS.
+*to trigger the workflow
+*************begin of change ******************************************************
+*To trigger the workflow to after creation of document
+** Begin of changes | Bonse | 04-Jul-2017
+      IF p_cross = gc_x.
+
+        ls_bukrs-sign   = gc_i.
+        ls_bukrs-option = gc_bt.
+        ls_bukrs-low    = gc_1.
+        ls_bukrs-high    = gc_9.
+        APPEND ls_bukrs TO lt_bukrs.
+
+        CLEAR:gs_return.
+        LOOP AT gt_return INTO gs_return.
+          IF gs_return-type EQ gc_s.
+       CONCATENATE gs_return-message_v2+10(4) gs_return-message_v2+0(10)
+                   gs_return-message_v2+14(4)  INTO gv_object_key.
+** Get the cross company key
+            SELECT SINGLE bvorg FROM bkpf
+              INTO lv_cckey WHERE bukrs = gv_object_key+0(4)
+              AND belnr = gv_object_key+4(10)
+              AND gjahr = gs_return-message_v2+14(4)
+              AND blart = 'CC'.
+            IF sy-subrc = 0.
+              WAIT UP TO 2 SECONDS.
+** Fetch document number details From BKPF based on cc KEY
+              SELECT bukrs belnr gjahr FROM bkpf
+                INTO TABLE lt_cc_doc
+                WHERE bukrs IN lt_bukrs
+                AND gjahr = gs_return-message_v2+14(4)
+                AND bvorg = lv_cckey.
+            ENDIF.
+          ENDIF.
+        ENDLOOP.
+        LOOP AT lt_cc_doc INTO ls_cc_doc.
+          "Object key
+CONCATENATE ls_cc_doc-bukrs ls_cc_doc-belnr ls_cc_doc-gjahr INTO gv_object_key.
+* FM to trigger workflow
+          CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+            EXPORTING
+              object_type    = gv_object_type
+              object_key     = gv_object_key
+              event          = gv_event
+              event_language = sy-langu
+              language       = sy-langu
+              user           = sy-uname
+            IMPORTING
+              return_code    = gv_return_code
+              event_id       = gv_event_id.
+        ENDLOOP.
+      ELSE.
+** End of changes | Bonse | 04-Jul-2017
+        CLEAR:gs_return.
+        LOOP AT gt_return INTO gs_return.
+          IF gs_return-type EQ gc_s.
+*  l_objectid =  gs_return-message_v2+0(10).
+
+       CONCATENATE gs_return-message_v2+10(4) gs_return-message_v2+0(10)
+       gs_return-message_v2+14(4)  INTO gv_object_key.
+
+            CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+              EXPORTING
+                object_type    = gv_object_type
+                object_key     = gv_object_key
+                event          = gv_event
+                event_language = sy-langu
+                language       = sy-langu
+                user           = sy-uname
+              IMPORTING
+                return_code    = gv_return_code
+                event_id       = gv_event_id.
+          ENDIF.
+        ENDLOOP.
+*************End of change ******************************************************
+      ENDIF. "Bonse
+   ENDIF.
+  ENDIF. "Bonse
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FIELD_CATALOG
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM field_catalog .
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-tabname     = 'GT_OUTPUT'.
+  gs_fieldcat-fieldname   = 'TYPE'.
+  gs_fieldcat-seltext_l   = 'TYPE'.
+  gs_fieldcat-outputlen   = '4'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-tabname     = 'GT_OUTPUT'.
+  gs_fieldcat-fieldname   = 'MESSAGE'.
+  gs_fieldcat-seltext_l   = 'MESSAGE'.
+  gs_fieldcat-outputlen   = '100'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+  CLEAR gs_fieldcat.
+  gs_fieldcat-tabname     = 'GT_OUTPUT'.
+  gs_fieldcat-fieldname   = 'LOG_NO'.
+  gs_fieldcat-seltext_l   = 'Document Number'.
+  gs_fieldcat-outputlen   = '20'.
+  gs_fieldcat-hotspot     = 'X'.
+  APPEND gs_fieldcat TO gt_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  PARK_DOCUMENT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM park_document.
+  DATA: lt_extension TYPE TABLE OF bapiparex,
+        ls_extension TYPE bapiparex,
+        lv_object    TYPE  bapiache02-obj_key.
+
+    ls_extension-structure = 'ACCIT'.
+    ls_extension-valuepart3 =  'X'.
+
+    APPEND ls_extension TO lt_extension.
+    CLEAR:ls_extension.
+
+    APPEND ls_extension TO lt_extension.
+    CLEAR:ls_extension.
+    REFRESH:gt_return.
+    CALL FUNCTION 'BAPI_ACC_DOCUMENT_CHECK'
+      EXPORTING
+        documentheader = gs_documentheader
+      TABLES
+        accountgl      = gt_accountgl
+        accounttax     = gt_accounttax " Bonse, 23-Aug-2017
+        currencyamount = gt_currencyamount
+        realestate     = gt_realestate
+        extension2     = lt_extension
+        return         = gt_return.
+
+    CLEAR:gs_return, gv_errflg.
+    LOOP AT gt_return INTO gs_return.
+      IF gs_return-type EQ gc_e.
+        gs_output-type    = gs_return-type.
+        gs_output-message = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+        gv_errflg = abap_true.
+      ELSEIF gs_return-type EQ gc_s.
+        IF gt_output[] IS INITIAL AND
+           p_test EQ abap_true.
+          gs_output-type   = gs_return-type.
+          gs_output-message_v2 = gs_return-message_v2.
+          gs_output-message = text-003.
+        ENDIF.
+      ELSEIF gs_return-type EQ 'I'.
+        gs_output-type    = gs_return-type.
+        gs_output-message  = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+      ENDIF.
+      APPEND gs_output TO gt_output.
+      CLEAR:gs_output.
+    ENDLOOP.
+    DELETE gt_output WHERE type EQ space.   "by rahulb 04/12/2017
+
+  IF gv_errflg NE abap_true AND
+     p_test NE abap_true.
+
+    IF gt_errors[] IS INITIAL.
+*Check calculate tax checkbox if valie tax code is entered
+
+      REFRESH: lt_extension.
+
+*Park the document for AB and SA document if test checkbox is not checked.
+      IF gv_blart EQ gc_ab OR
+         gv_blart EQ gc_sa.
+        IF p_test EQ abap_false.
+          gs_documentheader-doc_status = '2'.
+        ENDIF.
+      ENDIF.
+
+      ls_extension-structure = 'ACCIT'.
+      ls_extension-valuepart3 =  'X'.
+
+      APPEND ls_extension TO lt_extension.
+      CLEAR:ls_extension.
+*Initiallly check if there are any document type errors
+*in post document it will not check because of parking status.
+
+      REFRESH:gt_return.
+      CALL FUNCTION 'BAPI_ACC_DOCUMENT_POST'
+        EXPORTING
+          documentheader = gs_documentheader
+        TABLES
+          accountgl      = gt_accountgl
+          accounttax     = gt_accounttax
+          currencyamount = gt_currencyamount
+          realestate     = gt_realestate
+          extension2     = lt_extension
+          return         = gt_return.
+
+      REFRESH:gt_accountgl,gt_currencyamount,
+              gt_accounttax,gt_realestate,lt_extension.
+      CLEAR:gs_documentheader.
+
+      CLEAR:gs_return.
+      LOOP AT gt_return INTO gs_return.
+        IF gs_return-type EQ gc_e.
+          gs_output-type    = gs_return-type.
+          gs_output-message = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ELSEIF gs_return-type EQ gc_s.
+          gs_output-type    = gs_return-type.
+          gs_output-message = gs_return-message_v2.
+          gs_output-message_v2 = gs_return-message_v2.
+          CONCATENATE text-011 gs_return-message_v2+0(10)
+          text-009 gs_return-message_v2+10(4) text-012 INTO
+          gs_output-message SEPARATED BY space.
+          gs_output-log_no = gs_return-message_v2+0(10).
+        ELSEIF gs_return-type EQ 'I'.
+          gs_output-type    = gs_return-type.
+          gs_output-message  = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ENDIF.
+
+        APPEND gs_output TO gt_output.
+        CLEAR:gs_output.
+      ENDLOOP.
+
+      DELETE gt_output WHERE type EQ space.   "by rahulb 04/12/2017
+*IF there are no errors post the document
+*    IF gt_return IS INITIAL.
+      CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+   ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ACCRUAL_POST
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM accrual_post .
+
+  DATA:   lt_extension TYPE TABLE OF bapiparex,
+          ls_extension TYPE bapiparex,
+          lv_object    TYPE  bapiache02-obj_key,
+** Begin of changes Bonse
+          lv_obj_type  TYPE awtyp,
+          lv_obj_key   TYPE awkey,
+          lv_obj_sys   TYPE awsys.
+** End of changes Bonse
+*  all tables filled - now call bapi.
+    ls_extension-structure = 'ACCIT'.
+    ls_extension-valuepart1 = p_rdate.
+    ls_extension-valuepart2 = 'G2'.
+    ls_extension-valuepart3 = gc_x.
+
+    APPEND ls_extension TO lt_extension.
+    CLEAR: ls_extension.
+    REFRESH:gt_return.
+    CALL FUNCTION 'BAPI_ACC_DOCUMENT_CHECK'
+      EXPORTING
+        documentheader = gs_documentheader
+      TABLES
+        accountgl      = gt_accountgl
+*       accounttax     = gt_accounttax
+        currencyamount = gt_currencyamount
+        realestate     = gt_realestate
+        extension2     = lt_extension
+        return         = gt_return.
+
+    CLEAR:gs_return, gv_errflg.
+    LOOP AT gt_return INTO gs_return.
+      IF gs_return-type EQ gc_e.
+        gs_output-type    = gs_return-type.
+        gs_output-message = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+        gv_errflg = abap_true.
+      ELSEIF gs_return-type EQ gc_s.
+        IF gt_output[] IS INITIAL AND
+           p_test EQ abap_true.
+          gs_output-type    = gs_return-type.
+          gs_output-message = text-003.
+          gs_output-message_v2 = gs_return-message_v2.
+        ENDIF.
+      ELSEIF gs_return-type EQ 'I'.
+        gs_output-type    = gs_return-type.
+        gs_output-message  = gs_return-message.
+        gs_output-message_v2 = gs_return-message_v2.
+      ENDIF.
+      APPEND gs_output TO gt_output.
+      CLEAR:gs_output.
+    ENDLOOP.
+    DELETE gt_output WHERE type EQ space.   "by rahulb 04/12/2017
+
+  IF gv_errflg NE abap_true AND
+     p_test NE abap_true.
+
+    IF gt_errors[] IS INITIAL.
+
+      REFRESH: lt_extension.
+
+*Park the document for AB and SA document if test checkbox is not checked.
+      IF gv_blart EQ gc_ab OR
+         gv_blart EQ gc_sa.
+        IF p_test EQ abap_false.
+          gs_documentheader-doc_status = '2'.
+        ENDIF.
+      ENDIF.
+
+*    Error are checked already in CALL_GL_CHECK_POST...so need to
+*    call the bapi in test mode.
+*     No errors..good..Post the entries
+      ls_extension-structure = 'ACCIT'.
+      ls_extension-valuepart1 = p_rdate.
+      ls_extension-valuepart2 = 'G2'.
+      ls_extension-valuepart3 = gc_x.
+      APPEND ls_extension TO lt_extension.
+      CLEAR: ls_extension.
+
+      REFRESH:gt_return.
+      CALL FUNCTION 'BAPI_ACC_DOCUMENT_POST'
+        EXPORTING
+          documentheader = gs_documentheader
+** Begin of changes | Bonse | 27-Jun-2017
+        IMPORTING
+          obj_type       = lv_obj_type
+          obj_key        = lv_obj_key
+          obj_sys        = lv_obj_sys
+** End of changes | Bonse | 27-Jun-2017
+        TABLES
+          accountgl      = gt_accountgl
+          accounttax     = gt_accounttax
+          currencyamount = gt_currencyamount
+          realestate     = gt_realestate
+          extension2     = lt_extension
+          return         = gt_return.
+
+      REFRESH:gt_accountgl,gt_currencyamount,
+              gt_accounttax,gt_realestate,lt_extension.
+      CLEAR:gs_documentheader.
+
+      CLEAR:gs_return.
+      LOOP AT gt_return INTO gs_return.
+        IF gs_return-type EQ gc_e.
+          gs_output-type    = gs_return-type.
+          gs_output-message = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ELSEIF gs_return-type EQ gc_s.
+          gs_output-type    = gs_return-type.
+          gs_output-message = gs_return-message_v2.
+          gs_output-message_v2 = gs_return-message_v2.
+          CONCATENATE text-008 gs_return-message_v2+0(10)
+          text-009 gs_return-message_v2+10(4) text-010 INTO
+          gs_output-message SEPARATED BY space.
+          gs_output-log_no = gs_return-message_v2+0(10).
+        ELSEIF gs_return-type EQ 'I'.
+          gs_output-type    = gs_return-type.
+          gs_output-message  = gs_return-message.
+          gs_output-message_v2 = gs_return-message_v2.
+        ENDIF.
+
+        APPEND gs_output TO gt_output.
+        CLEAR:gs_output.
+      ENDLOOP.
+
+*IF there are no errors post the document
+*    IF gt_return IS INITIAL.
+      CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+   ENDIF.
+  ENDIF.
+  DELETE gt_output WHERE type EQ space.   "by rahulb 04/12/2017
+* Begin of change by reddygid on 28/06/2017
+  WAIT UP TO 2 SECONDS.
+*Trigger workflow after creation of document
+  CLEAR gs_return.
+  LOOP AT gt_return INTO gs_return.
+    IF gs_return-type EQ gc_s.
+      CONCATENATE gs_return-message_v2+10(4) gs_return-message_v2+0(10)
+      gs_return-message_v2+14(4) INTO gv_object_key.
+
+      CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+        EXPORTING
+          object_type    = gv_object_type
+          object_key     = gv_object_key
+          event          = gv_event
+          event_language = sy-langu
+          language       = sy-langu
+          user           = sy-uname
+        IMPORTING
+          return_code    = gv_return_code
+          event_id       = gv_event_id.
+    ENDIF.
+  ENDLOOP.
+* End of change by reddygid on 28/06/2017
+
+
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DOWNLOAD_TEMPLATE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+
+FORM download_template .
+
+  DATA: lv_pcfile TYPE string,
+        lv_path   TYPE string.
+*  DATA:lv_pcfile TYPE RLGRAP-FILENAME.
+  CONCATENATE p_dfile '\JOURNAL TEMPLATE.XLS' INTO lv_pcfile .
+
+  PERFORM prepare_header.
+
+  IF p_dfile IS NOT INITIAL.
+
+    lv_path = lv_pcfile.
+
+    CALL METHOD cl_gui_frontend_services=>gui_download
+      EXPORTING
+        filename              = lv_pcfile
+        filetype              = 'DAT'
+*       append                = 'X'
+        write_field_separator = 'X'
+        write_lf              = ' '
+*       COL_SELECT            = 'X'
+        trunc_trailing_blanks = 'X'
+*   TABLES
+      CHANGING
+        data_tab              = gt_fieldnames
+*       FIELDNAMES            =
+      EXCEPTIONS
+        OTHERS                = 1.
+
+
+    IF sy-subrc EQ 0.
+      MESSAGE text-014 TYPE gc_s.
+    ENDIF.
+  ENDIF.
+  CLEAR:gt_fieldnames.
+
+ENDFORM.
+
+
+
+*&---------------------------------------------------------------------*
+*&      Form  PREPARE_HEADER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM prepare_header.
+
+  DATA: ls_fieldname LIKE LINE OF gt_fieldnames,
+       lv_tab       TYPE c VALUE cl_abap_char_utilities=>horizontal_tab.
+  CONSTANTS: lc_cret TYPE c VALUE cl_abap_char_utilities=>cr_lf.
+
+  CONCATENATE ls_fieldname
+             text-023
+             lc_cret
+         INTO ls_fieldname.
+  APPEND ls_fieldname TO gt_fieldnames.
+  CLEAR ls_fieldname.
+
+  CONCATENATE ls_fieldname
+               text-047 text-045
+               lc_cret
+           INTO ls_fieldname.
+  APPEND ls_fieldname TO gt_fieldnames.
+  CLEAR ls_fieldname.
+
+  CONCATENATE ls_fieldname
+               text-048
+               lc_cret
+           INTO ls_fieldname.
+  APPEND ls_fieldname TO gt_fieldnames.
+  CLEAR ls_fieldname.
+
+*  concatenate ls_fieldname
+*              text-049
+*              lc_cret
+*          into ls_fieldname.
+*  append ls_fieldname to gt_fieldnames.
+*  clear ls_fieldname.
+
+*   CONCATENATE ls_fieldname
+*               ' '
+*               lc_cret
+*           INTO ls_fieldname.
+*  APPEND ls_fieldname TO gt_fieldnames.
+*  CLEAR ls_fieldname.
+
+  CONCATENATE ls_fieldname
+             text-024
+             lc_cret
+         INTO ls_fieldname.
+  APPEND ls_fieldname TO gt_fieldnames.
+  CLEAR ls_fieldname.
+*
+*  CONCATENATE ls_fieldname
+*             text-025
+*             lc_cret
+*         INTO ls_fieldname.
+*  APPEND ls_fieldname TO gt_fieldnames.
+*  CLEAR ls_fieldname.
+
+*  CONCATENATE ls_fieldname
+*              ' '
+*              lc_cret
+*          INTO ls_fieldname.
+*  APPEND ls_fieldname TO gt_fieldnames.
+*  CLEAR ls_fieldname.
+
+
+*Prepare header details for downloading template
+  CONCATENATE       ' '
+                    'BKPF-BLDAT'
+                    'BKPF-BUDAT'
+                    'BKPF-BLART'
+                    'BKPF-BUKRS'
+                    'BKPF-XBLNR'
+                    'BKPF-BKTXT'
+                    'RF05A-NEWKO'
+                    'BSEG-WRBTR'
+                    'BSEG-MWSKZ'
+                    'BSET-FWSTE'
+                    'PRCTR'
+                    'COBL-KOSTL'
+                    'COBL-AUFNR'
+                    'COBL-PS_POSID'
+                    'COBL-NPLNR'
+                    'BSEG-ZUONR'
+                    'BSEG-VBUND'
+                    'BSEG-XREF1'
+                    'BSEG-XREF2'
+                    'BSEG-SGTXT'
+                    'RF05A-NEWBK'
+                    'LFVI9-WENR'
+                    'LFVI9-GENR'
+                    'LFVI9-GRNR'
+                    'LFVI9-MENR'
+                    'LFVI9-NKSL'
+                    'LFVI9-EMPSL'
+                    'LFVI9-DABRBEZ'
+                    lc_cret
+                    INTO ls_fieldname  SEPARATED BY lv_tab.
+  APPEND ls_fieldname TO gt_fieldnames.
+
+  CONCATENATE
+                  'Identifier'
+                  'Document date'
+                  'Posting date'
+                  'Document type'
+                  'Company code'
+                  'Reference number'
+                  'Document header text'
+                  'Account number'
+                  'Amount'
+                  'Tax Code'
+*                  'Calculate tax'
+                  'Tax amount'
+                  'Profit centre'
+                  'Cost centre'
+                  'Order number'
+                  'WBS element'
+                  'Network'
+                  'Assignment'
+                  'Trading partner'
+                  'Reference key1'
+                  'Reference key2'
+                  'Line item text'
+                  'New company'
+                  'Business entity'
+                  'Building'
+                  'Property'
+                  'Rental unit'
+                  'Service charge key'
+                  'Settlement unit'
+                  'Valuation date'
+                  INTO ls_fieldname  SEPARATED BY lv_tab.
+
+  APPEND ls_fieldname TO gt_fieldnames.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_DIRECTORY_PATH
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_P_DFILE  text
+*----------------------------------------------------------------------*
+FORM get_directory_path  USING    lv_file.
+
+  DATA:  lv_title TYPE string,
+         lv_path  TYPE string.
+
+  lv_title = text-017.
+
+  CALL METHOD cl_gui_frontend_services=>directory_browse
+    EXPORTING
+      window_title         = lv_title
+    CHANGING
+      selected_folder      = lv_path
+    EXCEPTIONS
+      cntl_error           = 1
+      error_no_gui         = 2
+      not_supported_by_gui = 3
+      OTHERS               = 4.
+
+  IF sy-subrc = 0.
+    lv_file  = lv_path.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CHECK_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM check_file .
+**---------------------------------------------------------------------*
+  DATA:lt_file_status      TYPE TABLE OF zpivf.
+* Checking if the input file has already been processed
+  CLEAR:gv_status.
+  gv_file_name = p_file.
+  sy-subrc = 0.
+  WHILE sy-subrc = 0.                     " remove all path details
+    SEARCH gv_file_name  FOR '\'.       " & retain just the file name
+    IF sy-subrc = 0.                   " any more slashes found
+      SHIFT gv_file_name  UP TO '\' .  " get rid of path details
+      SHIFT gv_file_name BY 1 PLACES.  " get rid of '\'
+    ELSE.
+      EXIT.
+    ENDIF.
+  ENDWHILE.
+  gv_status = 'N'.
+
+  SELECT * FROM zpivf
+    INTO TABLE lt_file_status
+    WHERE filenm = gv_file_name.
+
+  IF sy-subrc = 0.
+    MOVE 'Y' TO gv_status.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  UPDATE_ZPIVF
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM update_zpivf.
+*Update the ZPIVF table with the file uploaded
+*rasied error message next time if the same file is uploaded
+  READ TABLE gt_output INTO gs_output WITH KEY type = gc_s.
+  IF sy-subrc EQ 0 AND gv_status EQ 'N'.
+    MOVE gv_file_name TO zpivf-filenm.
+    MOVE sy-uname TO zpivf-usernm.
+    MOVE sy-datum TO zpivf-datepr.
+    MOVE sy-uzeit TO zpivf-timepr.
+    INSERT zpivf.
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CONVERSION
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_DATA_SWENR  text
+*      <--P_LS_DATA_SWENR  text
+*----------------------------------------------------------------------*
+FORM conversion  USING    pv_val
+                 CHANGING pv_output.
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input         = pv_val
+   IMPORTING
+     output        = pv_output
+            .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZVALIDATE_TAX_CODE
+*&---------------------------------------------------------------------*
+*       Validate Tax Code
+*----------------------------------------------------------------------*
+FORM zvalidate_tax_code  USING  gs_data TYPE ty_data.
+
+  DATA: lv_mwskz_temp TYPE mwskz.
+
+  CLEAR: lv_mwskz_temp.
+
+* Validate Tax Code
+
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input         = gs_data-newko
+    IMPORTING
+      output         = gs_data-newko.
+
+  SELECT SINGLE *
+    INTO @DATA(lw_skb1)
+    FROM skb1
+   WHERE bukrs EQ @gs_data-bukrs
+     AND saknr EQ @gs_data-newko.
+
+  IF sy-subrc EQ 0.
+    CASE lw_skb1-mwskz.
+      WHEN '-'.
+        IF gs_data-mwskz IS INITIAL AND
+           lw_skb1-xmwno IS INITIAL.
+          gs_output-type    = 'E'.
+          CONCATENATE text-082 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          IF NOT gs_data-newbk IS INITIAL.
+            CONCATENATE gs_output-message text-009 gs_data-newbk
+                 INTO gs_output-message SEPARATED BY space.
+          ELSE.
+            CONCATENATE gs_output-message text-009 gs_data-bukrs
+                 INTO gs_output-message SEPARATED BY space.
+          ENDIF.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ELSEIF NOT gs_data-mwskz(1) = 'P'
+           AND NOT gs_data-mwskz(1) = 'p'.
+          gs_output-type    = 'E'.
+          CONCATENATE gs_data-mwskz text-079 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          CONCATENATE gs_output-message text-080
+                 INTO gs_output-message.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ENDIF.
+      WHEN '+'.
+        IF gs_data-mwskz IS INITIAL AND
+           lw_skb1-xmwno IS INITIAL.
+          gs_output-type    = 'E'.
+          CONCATENATE text-082 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          IF NOT gs_data-newbk IS INITIAL.
+            CONCATENATE gs_output-message text-009 gs_data-newbk
+                 INTO gs_output-message SEPARATED BY space.
+          ELSE.
+            CONCATENATE gs_output-message text-009 gs_data-bukrs
+                 INTO gs_output-message SEPARATED BY space.
+          ENDIF.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ELSEIF NOT gs_data-mwskz(1) = 'S'
+           AND NOT gs_data-mwskz(1) = 's'.
+          gs_output-type    = 'E'.
+          CONCATENATE gs_data-mwskz text-079 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          CONCATENATE gs_output-message text-081
+                 INTO gs_output-message.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ENDIF.
+      WHEN '*'.
+        IF gs_data-mwskz IS INITIAL AND
+           lw_skb1-xmwno IS INITIAL.
+          gs_output-type    = 'E'.
+          CONCATENATE text-082 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          IF NOT gs_data-newbk IS INITIAL.
+            CONCATENATE gs_output-message text-009 gs_data-newbk
+                 INTO gs_output-message SEPARATED BY space.
+          ELSE.
+            CONCATENATE gs_output-message text-009 gs_data-bukrs
+                 INTO gs_output-message SEPARATED BY space.
+          ENDIF.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ELSEIF gs_data-mwskz IS NOT INITIAL AND
+               ( gs_data-blart EQ 'ZA' OR
+                 gs_data-blart EQ 'SA' ).
+          IF ( gs_data-mwskz NE 'PZ' AND
+               gs_data-mwskz NE 'SZ' ).
+              CHECK p_test IS INITIAL.
+            gs_output-type    = 'E'.
+            gs_output-message = text-089.
+            gs_output-row     = gs_data-count.
+            APPEND gs_output TO gt_output.
+            CLEAR: gs_output.
+          ENDIF.
+        ENDIF.
+      WHEN space.
+        IF NOT gs_data-mwskz IS INITIAL.
+          gs_output-type    = 'E'.
+          CONCATENATE text-083 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          IF NOT gs_data-newbk IS INITIAL.
+            CONCATENATE gs_output-message text-009 gs_data-newbk
+                 INTO gs_output-message SEPARATED BY space.
+          ELSE.
+            CONCATENATE gs_output-message text-009 gs_data-bukrs
+                 INTO gs_output-message SEPARATED BY space.
+          ENDIF.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ENDIF.
+      WHEN '<' OR '>'.    "input/output sales tax
+          gs_output-type    = 'E'.
+          CONCATENATE text-091 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+      WHEN OTHERS.
+
+*Tax code on screen 0300 of transaction FB01 is output only
+*if the tax code has been configured in SKB1.
+*When tax code in file, must match config.
+        IF gs_data-mwskz IS INITIAL AND
+           lw_skb1-xmwno IS INITIAL.
+          gs_output-type    = 'E'.
+          CONCATENATE text-082 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          IF NOT gs_data-newbk IS INITIAL.
+            CONCATENATE gs_output-message text-009 gs_data-newbk
+                 INTO gs_output-message SEPARATED BY space.
+          ELSE.
+            CONCATENATE gs_output-message text-009 gs_data-bukrs
+                 INTO gs_output-message SEPARATED BY space.
+          ENDIF.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ELSEIF NOT gs_data-mwskz IS INITIAL
+               AND gs_data-mwskz <> lw_skb1-mwskz.
+          gs_output-type    = 'E'.
+          CONCATENATE gs_data-mwskz text-079 gs_data-newko
+                 INTO gs_output-message SEPARATED BY space.
+          gs_output-row     = gs_data-count.
+          APPEND gs_output TO gt_output.
+          CLEAR: gs_output.
+        ENDIF.
+    ENDCASE.
+  ENDIF.
+
+*-- Check against company code
+  IF NOT gs_data-mwskz IS INITIAL.
+    TRANSLATE gs_data-mwskz TO UPPER CASE.
+    SELECT SINGLE mwskz
+           INTO lv_mwskz_temp
+           FROM t001 AS a
+           JOIN t005 AS b
+             ON a~land1 = b~land1
+           JOIN t007a AS e
+             ON b~kalsm = e~kalsm
+          WHERE a~bukrs = gs_data-bukrs
+            AND e~mwskz = gs_data-mwskz.
+    IF sy-subrc NE 0.
+      gs_output-type    = 'E'.
+      CONCATENATE gs_data-mwskz text-079 gs_data-newko
+             INTO gs_output-message SEPARATED BY space.
+      gs_output-row     = gs_data-count.
+      APPEND gs_output TO gt_output.
+      CLEAR: gs_output.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  cf_set_alv_status
+*&---------------------------------------------------------------------*
+*       Set PF Status and add buttons for ALV Grid
+*       (This routine called dynamically from 'REUSE_ALV_GRID_DISPLAY'
+*        function module)
+*----------------------------------------------------------------------*
+*      -->RT_EXTAB     Table containing button pressed
+*----------------------------------------------------------------------*
+FORM cf_set_alv_status USING rt_extab TYPE slis_t_extab.    "#EC CALLED
+
+* Set PF Status
+  SET PF-STATUS 'ALVGRID' EXCLUDING rt_extab.               "#EC *
+
+ENDFORM.                    "cf_set_alv_status
+*&---------------------------------------------------------------------*
+*&      Form  cf_user_alv_command
+*&---------------------------------------------------------------------*
+*       Buttons from ALV Grid
+*       (This routine called dynamically from 'REUSE_ALV_GRID_DISPLAY'
+*        function module)
+*----------------------------------------------------------------------*
+*      -->LV_UCOMM     User command of button pressed
+*      -->LV_SELFIELD  values from data selected on ALV Grid
+*----------------------------------------------------------------------*
+FORM cf_user_alv_command
+     USING lv_ucomm      TYPE syucomm
+           lv_selfield   TYPE slis_selfield.                "#EC CALLED
+
+  DATA: lv_gjahr   TYPE gjahr,
+        lv_bukrs   TYPE bukrs.
+
+*Routine called when user invokes a command not handled by the ALV
+  CASE lv_ucomm.
+    WHEN '&IC1'.
+*--------hotspot
+      CHECK lv_selfield-tabindex <> 0.
+      CLEAR: gs_output.
+      READ TABLE gt_output INTO gs_output
+                          INDEX lv_selfield-tabindex.
+      IF sy-subrc IS INITIAL AND
+         gs_output-log_no IS NOT INITIAL.
+
+        SET PARAMETER ID 'BLN' FIELD gs_output-log_no.
+
+        lv_bukrs = gs_output-message_v2+10(4).
+        lv_gjahr = gs_output-message_v2+14(4).
+
+        SET PARAMETER ID 'BUK' FIELD lv_bukrs.
+
+        SET PARAMETER ID 'GJR' FIELD lv_gjahr.
+
+        CALL TRANSACTION 'FB03' AND SKIP FIRST SCREEN.
+      ENDIF.
+  ENDCASE.
+
+ENDFORM.                    "user_alv_command
+*&---------------------------------------------------------------------*
+*&      Form  SUCC_PROC
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM succ_proc .
+
+  DO gv_flag TIMES.
+    CLEAR gs_output.
+    gs_output-type    = 'S'.
+    gs_output-message = text-092.
+
+    APPEND gs_output TO gt_output.
+    CLEAR: gs_output,gv_val.
+  ENDDO.
+  DELETE gt_output WHERE type EQ space.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZVALIDATE_PROFIT_CENTRE
+*&---------------------------------------------------------------------*
+*       Validate if profit centre is mandatory
+*----------------------------------------------------------------------*
+FORM zvalidate_profit_centre  USING  gs_data TYPE ty_data.
+
+  TYPES: BEGIN OF ty_counter,
+           sign TYPE char3,
+         END OF ty_counter.
+
+  DATA: lw_field_status TYPE T004F-FAUS1,
+        lt_counter      TYPE TABLE OF ty_counter,
+        lw_counter      TYPE ty_counter,
+        lt_tmodu        TYPE TABLE OF TMODU,
+        lw_tmodu        TYPE TMODU,
+        lv_count        TYPE char3,
+        lv_len          TYPE i,
+        lv_field        TYPE string.
+
+  FIELD-SYMBOLS: <fs_f1> TYPE any,
+                 <fs_f2> TYPE any,
+                 <fs_field> TYPE any.
+
+  REFRESH: lt_counter, lt_tmodu.
+
+  CLEAR: lw_field_status, lv_len, lv_count,
+         lw_counter, lw_tmodu.
+
+  UNASSIGN: <fs_f1>, <fs_f2>, <fs_field>.
+
+*--Get the field status for the account to check the mandatory fields
+  CALL FUNCTION 'GET_FIELDSTATUS_FOR_GL_ACCT'
+    EXPORTING
+      I_ACCOUNT_NR          = gs_data-newko
+      i_company_code        = gs_data-bukrs
+      i_account_type        = 'S'
+   IMPORTING
+     E_FIELD_STATUS        = lw_field_status
+   EXCEPTIONS
+     NO_ACCOUNT_TYPE       = 1
+     NO_ACCOUNT            = 2
+     NO_COMPANY_CODE       = 3
+     NO_MASTER_DATA        = 4
+     NO_STATUS_FOUND       = 5
+     NO_DEPR_AREA          = 6
+     OTHERS                = 7.
+  IF sy-subrc IS INITIAL.
+    DO.
+      SEARCH lw_field_status FOR '+'.
+
+      IF sy-subrc = 0.
+        lv_count = sy-fdpos.
+        CONDENSE lv_count.
+        lv_len = strlen( lv_count ).
+        IF lv_len EQ 1 OR
+           lv_len EQ 2.
+          lw_counter-sign = sy-fdpos + 1.
+          CONCATENATE '0' lw_counter-sign into lw_counter-sign.
+        ELSE.
+         lw_counter-sign = sy-fdpos + 1.
+        ENDIF.
+
+        REPLACE lw_field_status+sy-fdpos(1) IN lw_field_status WITH '*'.
+        APPEND lw_counter TO lt_counter.
+        CLEAR: lw_counter.
+      ELSE.
+        EXIT.
+      ENDIF.
+    ENDDO.
+  ENDIF.
+
+*--Fetch the entries from the table TMODU
+  SELECT *
+    INTO TABLE lt_tmodu
+    FROM TMODU
+     FOR ALL ENTRIES IN lt_counter
+   WHERE fauna EQ 'SKB1-FAUS1'
+     AND modif EQ lt_counter-sign
+     AND koart EQ 'S'.
+  IF sy-subrc IS INITIAL.
+    CLEAR: lw_counter.
+    LOOP AT lt_counter INTO lw_counter.
+      CLEAR: lw_tmodu.
+      READ TABLE lt_tmodu INTO lw_tmodu
+                      WITH KEY modif = lw_counter-sign.
+      IF sy-subrc IS INITIAL.
+       ASSIGN lw_tmodu-feldn TO <fs_f1>.
+       IF <fs_f1> EQ 'PRCTR'.
+         ASSIGN gs_data TO <fs_f2>.
+         ASSIGN COMPONENT <fs_f1> OF STRUCTURE <fs_f2> TO <fs_field>.
+         IF <fs_field> IS INITIAL.
+           gs_output-type    = 'E'.
+           CONCATENATE text-054 <fs_f1>
+                       text-055 gs_data-newko
+                       text-009 gs_data-bukrs
+                  INTO gs_output-message SEPARATED BY space.
+           APPEND gs_output TO gt_output.
+           CLEAR: gs_output.
+         ENDIF.
+       ENDIF.
+      ENDIF.
+
+    ENDLOOP.
+  ENDIF.
+
+
+ENDFORM.
