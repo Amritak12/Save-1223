@@ -1,0 +1,388 @@
+ENHANCEMENT 1  ZMMEP_TRIGGER_ADJUSTMENT_PO.    "active version
+*----------------------------------------------------------------------*
+*               M o d i f i c a t i o n   L o g
+*----------------------------------------------------------------------*
+* DATE      USERID  ISSUE#     REQUEST#   DESCRIPTION
+*----------------------------------------------------------------------*
+* Local Variable for checking the Version no, we need to trigger WF for other than V0.
+
+DATA: lv_revno1 type REVNO,
+      lv_rscod type RSCOD,
+      lv_txz01 type TXZ01_DCM,
+      lv_extnr type DCM_EXTNR,
+      lv_contract_type type text20,
+      lv_name  type RVARI_VNAM.
+
+  DATA : lv_revno TYPE i .
+  lv_revno   = ekko-revno.
+
+  DATA : lv_revno_previous TYPE revno.
+         lv_revno_previous = lv_revno - 1.
+         lv_revno_previous = |{ lv_revno_previous ALPHA =  IN }|.
+
+
+* Trigger the WF from only ME22N and ME23N (Edit mode)
+  IF ( ( sy-tcode = 'ME22N' ) OR ( sy-tcode = 'ME23N' ) )
+     AND ( lv_revno GE 1 )  .
+
+    DATA : lv_bsart TYPE bsart,
+           lv_bukrs TYPE bukrs.
+    CONSTANTS : lc_bsart TYPE rvari_vnam VALUE 'Z_BSART',
+                lc_bukrs TYPE rvari_vnam VALUE 'Z_MM_ADJ_WF_BUKRS',
+                lc_type  TYPE rsscr_kind VALUE 'S',
+                lc_sign  TYPE tvarv_sign VALUE 'I',
+                lc_opti  TYPE tvarv_opti VALUE 'EQ',
+                lc_zero  TYPE char8      VALUE '00000000',
+                lc_bukrs_pwcp type rvari_vnam VALUE 'Z_MM_ADJ_WF_BUKRS_PWCP'. "Client Pays
+
+*    Code should trigger for only few company codes, maintinaed in TVARVC
+*    with name Z_MM_ADJ_WF_BUKRS .
+   if ekko-bukrs is not INITIAL.
+    SELECT SINGLE low
+        FROM tvarvc
+        INTO lv_bukrs
+        WHERE ( name =  lc_bukrs or
+
+                name =  lc_bukrs_pwcp )
+
+        AND   type = lc_type
+        AND   sign = lc_sign
+        AND   opti = lc_opti
+        AND   low  = ekko-bukrs.
+    IF  sy-subrc = 0.
+*     Code should trigger for only few Docuemnt types , maintinaed in TVARVC
+*     with name Z_BSART .
+      SELECT SINGLE low
+          FROM tvarvc
+          INTO lv_bsart
+          WHERE name = lc_bsart
+          AND   type = lc_type
+          AND   sign = lc_sign
+          AND   opti = lc_opti
+          AND   low  = ekko-bsart.
+
+      IF sy-subrc = 0 .
+*     Type Declarations:
+        TYPES:  BEGIN OF ty_cdhdr,
+                  objectclas TYPE cdobjectcl,
+                  objectid   TYPE cdobjectv,
+                  changenr   TYPE cdchangenr,
+                  udate      TYPE cddatum,
+                  utime      TYPE cduzeit,
+                END OF ty_cdhdr .
+
+        TYPES:  BEGIN OF ty_cdpos,
+                  objectclas TYPE cdobjectcl,
+                  objectid   TYPE cdobjectv,
+                  changenr   TYPE cdchangenr,
+                  value_new  TYPE cdfldvaln,
+                  value_old  TYPE cdfldvalo,
+                END OF ty_cdpos .
+        TYPES: tty_t_verev TYPE STANDARD TABLE OF verev INITIAL SIZE 0.
+*       Data Declarations:
+        DATA : lt_cdpos TYPE TABLE OF ty_cdpos,
+               ls_cdpos TYPE ty_cdpos,
+               lt_cdhdr TYPE TABLE OF ty_cdhdr,
+               ls_cdhdr TYPE ty_cdpos.
+
+        DATA :  lv_original_days TYPE zmm_po_adjustment_wf-changedays,
+                lv_change_days   TYPE zmm_po_adjustment_wf-changedays,
+                lv_base_price    TYPE bwert,
+                lv_price_diff    TYPE bwert,
+                lv_erev_revok    TYPE dcm_revok,
+                lv_new_revok     TYPE dcm_revok,
+                lv_kdate         TYPE sy-datum,
+                lv_kdatb         TYPE sy-datum,
+                lv_stdiff        TYPE zmm_po_adjustment_wf-changedays,
+                lv_endiff        TYPE zmm_po_adjustment_wf-changedays.
+
+        DATA : lt_xerev            TYPE tty_t_verev,
+               lt_yerev            TYPE tty_t_verev,
+               ld_method           TYPE string,
+               key                 TYPE sweinstcou-objkey,
+               lt_xerev_final      TYPE tty_t_verev,
+               lt_yerev_final      TYPE tty_t_verev,
+               lv_trigger_workflow TYPE char1.
+
+        DATA : lo_obj TYPE REF TO object.
+
+*       Field Symbols.
+        FIELD-SYMBOLS:
+          <fs_stackvalue> TYPE ANY TABLE,
+          <fs_wa_stack>   TYPE any,
+          <fs_cl_ref>     TYPE any,
+          <fs_wa>         TYPE verev.
+
+*       Constants.
+        CONSTANTS:
+          lc_stack_loc(25)    TYPE c    VALUE '(SAPLMEDCMM)GT_MANAGERS'.
+
+*       Method name, used to read data dynamically at runtime
+        ld_method = 'PREPARE_POST'.
+
+*       Getting/Assigning GT_MANAGERS's data from ABAP Stack.
+        ASSIGN (lc_stack_loc) TO <fs_stackvalue>.
+
+        IF <fs_stackvalue> IS ASSIGNED.
+          LOOP AT <fs_stackvalue> ASSIGNING <fs_wa_stack>.
+
+            UNASSIGN <fs_cl_ref>.
+*        Getting the Class reference variable from  'GT_MANAGERS'
+            ASSIGN COMPONENT 'MANAGER' OF STRUCTURE <fs_wa_stack> TO <fs_cl_ref> .
+            lo_obj = <fs_cl_ref> .
+
+*       Calling the Method 'PREPARE_POST' of `\PROGRAM=SAPLMEDCMM\CLASS=LCL_REVISION_MANAGER`
+*       for Reading Price chage data
+            CALL METHOD lo_obj->(ld_method)
+              IMPORTING
+                ex_xerev = lt_xerev
+                ex_yerev = lt_yerev.
+
+            APPEND LINES OF lt_xerev TO lt_xerev_final.
+            APPEND LINES OF lt_yerev TO lt_yerev_final.
+
+            REFRESH : lt_xerev, lt_yerev .
+          ENDLOOP.
+        ENDIF.
+
+        CLEAR: lv_trigger_workflow,lv_new_revok,lv_erev_revok.
+*     Calculating Price Adjstment changes: the Below table will have entries
+*     only if there is a Price adjustment
+*     Workflow should trigger for only Completed Versions i.e REVOK = 'X'.
+        READ TABLE lt_xerev_final  ASSIGNING <fs_wa> WITH KEY revok = abap_true.
+
+        IF sy-subrc = 0 .
+          lv_new_revok =  abap_true.
+*         Calculate Price increse by comparing with initial Version.
+*         get initial aomunt from V0
+
+          CLEAR lv_base_price .
+          SELECT SINGLE netwr FROM erev
+                 INTO lv_base_price
+                WHERE edokn = ekko-ebeln
+                 AND  revno = lv_revno_previous.
+
+          lv_price_diff = <fs_wa>-netwr - lv_base_price .
+
+            lv_trigger_workflow = abap_true.
+
+        ENDIF.
+
+        IF ekpo-mwskz = 'P1'.
+          lv_price_diff = ( lv_price_diff * 11 ) / 10.
+        ENDIF.
+
+
+*       this to check Version is completed or not .
+        IF lv_new_revok = abap_false .
+          SELECT SINGLE revok FROM erev
+                   INTO lv_erev_revok
+                  WHERE edokn = ekko-ebeln
+                    AND revno = ekko-revno .
+        ENDIF.
+
+*       Checking wheather the version is Complete .
+        IF ( lv_erev_revok =  abap_true )
+            OR ( lv_new_revok =  abap_true ) .
+
+          TRY .
+
+              lv_change_days = (  ekko-kdate -  ekko-kdatb ) -
+                               ( *ekko-kdate - *ekko-kdatb ).
+
+*          Calculate Orginal Contract lengh
+
+              lv_original_days = ( *ekko-kdate - *ekko-kdatb ).
+
+            CATCH cx_sy_arithmetic_overflow .
+          ENDTRY.
+*       update the indicator which used to decide the start of Adjsutment Workflow
+          IF lv_change_days NE 0 .
+            lv_trigger_workflow = abap_true.
+          ENDIF.
+        ENDIF.
+
+*     if there is a Price adjustment or time adjsutment, or both call the event
+        IF lv_trigger_workflow = abap_true.
+
+  DATA: ls_erev TYPE erev.
+  CLEAR: ls_erev, lv_revno1, lv_rscod, lv_txz01, lv_extnr .
+  READ TABLE lt_xerev_final INTO ls_erev INDEX 1.
+  lv_revno1  = ls_erev-revno.
+  lv_rscod   = ls_erev-rscod.
+  lv_txz01   = ls_erev-txz01.
+  lv_extnr   =  ls_erev-extnr.
+  IF lv_revno1 IS INITIAL AND
+    lv_rscod IS INITIAL AND
+    lv_txz01 IS INITIAL AND
+    lv_extnr IS INITIAL.
+    SELECT SINGLE revno rscod txz01 extnr FROM erev
+           INTO (lv_revno1, lv_rscod, lv_txz01, lv_extnr)
+          WHERE edokn = ekko-ebeln
+           AND  revno = ekko-revno.
+  ENDIF.
+
+          key = ekko-ebeln .          " Purchase Order number
+*      Fill Data to Container
+          DATA :lt_ip_container TYPE TABLE OF swr_cont,
+                ls_ip_container TYPE  swr_cont.
+
+*     Passing  Price adjustment to WF Container
+          ls_ip_container-element = 'ValueChange'.
+          ls_ip_container-value   = lv_price_diff.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing  Contract Number  to WF Container
+          ls_ip_container-element = 'ContractNo'.
+          ls_ip_container-value = ekko-zzcnum.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing  Contract Name to WF Container
+          ls_ip_container-element = 'ContractName'.
+          ls_ip_container-value = ekko-zzcname.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Purchasing Document Date to WF Container
+          ls_ip_container-element = 'BEDAT'.
+          ls_ip_container-value = ekko-bedat.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+*
+*     Passing Start of Validity Period to WF Container
+          ls_ip_container-element = 'KDATB'.
+          ls_ip_container-value = ekko-kdatb.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing End of Validity Period to WF Container
+          ls_ip_container-element = 'KDATE'.
+          ls_ip_container-value = ekko-kdate.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contractor Value to WF Container
+          ls_ip_container-element = 'Contractor'.
+          SELECT SINGLE name1 FROM lfa1 INTO ls_ip_container-value
+            WHERE lifnr = ekko-lifnr.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*      Passing  Company code text to WF Container
+          ls_ip_container-element = 'CompanyCodeText'.
+          SELECT SINGLE butxt FROM t001 INTO ls_ip_container-value
+            WHERE bukrs = ekko-bukrs .
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Value to WF Container
+          ls_ip_container-element = 'VALUE'.
+          ls_ip_container-value = ekko-zzpo_value.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing  Price adjustment to WF Container
+          ls_ip_container-element = 'BasePrice'.
+          ls_ip_container-value   = lv_base_price .
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Original Length WF Container
+          ls_ip_container-element = 'ContractLength'.
+          ls_ip_container-value = lv_original_days.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Adjustment Change Days to  WF Container
+          ls_ip_container-element = 'ChangeDays'.
+          ls_ip_container-value = lv_change_days.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Text description to  WF Container
+          ls_ip_container-element = 'ShortText'.
+          ls_ip_container-value = lv_txz01.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Revision number to  WF Container
+          ls_ip_container-element = 'Version'.
+          ls_ip_container-value = lv_revno1.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Revision number to  WF Container
+          ls_ip_container-element = 'BasePlanningObject'.
+          ls_ip_container-value = lv_extnr.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Revision number to  WF Container
+          ls_ip_container-element = 'ReasonForChange'.
+          ls_ip_container-value = lv_rscod.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+*     Passing Contract Revision number to  WF Container
+          ls_ip_container-element = 'ChangeDate'.
+          ls_ip_container-value = sy-datum.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+
+           "%-->Get Contract type based on company code
+           CONCATENATE 'ZMM_COVAT_DESC' lv_bukrs
+                        into lv_name SEPARATED BY '_'.
+           SELECT SINGLE LOW
+                  FROM TVARVC INTO LV_CONTRACT_TYPE
+                  WHERE NAME = lv_name.
+          ls_ip_container-element = 'ContractType'.
+          ls_ip_container-value   = LV_CONTRACT_TYPE.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+          "%-->Get company code from EKKO
+          ls_ip_container-element = 'CompanyCode'.
+          ls_ip_container-value   = ekko-bukrs.
+          APPEND ls_ip_container TO lt_ip_container.
+          CLEAR ls_ip_container.
+          "%End of change-GUNTURUB- DE5K915212
+          CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+            EXPORTING
+              object_type     = 'YBUS2012'
+              object_key      = key
+              event           = 'POADJUSTMENT'
+            TABLES
+              input_container = lt_ip_container.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+endif.
+
+  ELSEIF ekko-revno = '00000000' AND
+    ( ( sy-tcode = 'ME21N' ) OR ( sy-tcode = 'ME22N' ) OR ( sy-tcode = 'ME23N' ) ) AND
+
+     ( ekko-bsart =   'CONS' OR
+      ekko-bsart = 'GC21' OR
+      ekko-bsart = 'MW21' OR
+      ekko-bsart = 'MMW' ) AND
+      ekko-memory = space.
+    key = ekko-ebeln.
+
+*-- Trigger CRO Workflow  (WS91000007)
+    CALL FUNCTION 'SAP_WAPI_CREATE_EVENT'
+      EXPORTING
+        object_type = 'ZMM_PO'
+        object_key  = key
+        event       = 'CHANGED'.
+
+  ENDIF.
+
+
+ENDENHANCEMENT.
+
+Thanks and Regards 
+---------------------------------------------------------------------- 
+Amrita K. | SAP Analyst Programmer 
+Direct: +61 469 314 414 | Email: amrita.kuruvail@govconnect.nsw.gov.au
+
