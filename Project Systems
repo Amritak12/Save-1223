@@ -1,0 +1,2865 @@
+REPORT zps_dfsi_subsidence_claim.
+
+*--Top Include
+INCLUDE zps_dfsi_subsidence_top01.
+
+*--Form Include
+INCLUDE zps_dfsi_subsidence_form01.
+
+*----------------------------------------------------------------------*
+* Initilization
+*----------------------------------------------------------------------*
+INITIALIZATION.
+
+*----------------------------------------------------------------------*
+* AT SELECTION-SCREEN
+*----------------------------------------------------------------------*
+AT SELECTION-SCREEN ON VALUE-REQUEST FOR p_pfile.
+  PERFORM zget_pc_file.
+
+*----------------------------------------------------------------------*
+* START-OF-SELECTION
+*----------------------------------------------------------------------*
+START-OF-SELECTION.
+
+  PERFORM zread_inbound_file.
+
+  PERFORM zfetch_data.
+
+*----------------------------------------------------------------------*
+* END-OF-SELECTION
+*----------------------------------------------------------------------*
+END-OF-SELECTION.
+
+  PERFORM zupdate_ps_data.
+
+  PERFORM zarchive_file.
+
+  PERFORM zwrite_error_file.
+
+  IF NOT gt_error IS INITIAL.
+    PERFORM zsend_error_mail.
+*--Display the Errors in ALV
+    PERFORM zdisplay_messages.
+  ELSE.
+*--Display Success Messages
+    PERFORM zdisplay_messages.
+  ENDIF.
+  ************************************************************************************************************
+*--Tables
+TABLES: PRPS,
+        PROJ.
+
+*--Types
+TYPES: BEGIN OF ty_data,
+         cltyp TYPE rcwkp-vorspsp,
+         clnum TYPE proj-pspid,
+         cldes TYPE proj-post1,
+         clsts TYPE string,  "Claim system back-end status
+         cloff TYPE pa0105-usrid_long, "prps-vernr,
+         clnos TYPE prps-usr01,
+         regio TYPE prps-usr02,
+         settl TYPE prps-usr03,
+         dstoa TYPE prps-usr04,
+         datoc TYPE prps-usr05,
+         apamt TYPE prps-usr06,
+         curr1 TYPE prps-use06,
+         coamt TYPE prps-usr07,
+         curr2 TYPE prps-use07,
+         clrdt TYPE prps-usr08,
+         cladt TYPE prps-usr09,
+         amine TYPE prps-usr10,
+         copay TYPE string,
+       END OF ty_data,
+
+       BEGIN OF ty_proj,
+         pspnr TYPE proj-pspnr,
+         pspid TYPE proj-pspid,
+         objnr TYPE proj-objnr,
+       END OF ty_proj,
+
+       BEGIN OF ty_ajilon,
+         ZAJSTS TYPE ZAJSTS,
+         ZPRPS  TYPE ZPRPS,
+         ZPRPU  TYPE ZPRPU,
+         ZARAS  TYPE ZARAS,
+         ZARAU  TYPE ZARAU,
+         ZOROS  TYPE ZOROS,
+         ZOROU  TYPE ZOROU,
+       END OF ty_ajilon,
+
+       BEGIN OF ty_emailid,
+         pernr TYPE pernr-pernr,
+         usrid TYPE COMM_ID_LONG,
+       END OF ty_emailid,
+
+       BEGIN OF ty_error,
+         eleme(50) TYPE c,
+         descr(50) TYPE c,
+         messg(150) TYPE c,
+       END OF ty_error,
+
+*--Type for holding receiver mailids
+       BEGIN OF ty_receiver,
+         l_somlreci1 TYPE somlreci1,
+       END OF ty_receiver,
+
+*--Type for holding body of the email
+         BEGIN OF ty_objtxt,
+           l_solisti1 TYPE solisti1,
+         END OF ty_objtxt,
+
+         BEGIN OF ty_files,
+           file TYPE char32,
+         END OF ty_files.
+
+*--Internal Tables
+DATA: gt_data    TYPE STANDARD TABLE OF ty_data,
+      gt_proj    TYPE STANDARD TABLE OF ty_proj,
+      gt_files   TYPE STANDARD TABLE OF ty_files,
+*      gt_rpsco   TYPE STANDARD TABLE OF ty_rpsco,
+*      gt_rpsc    TYPE STANDARD TABLE OF ty_rpsc,
+      gt_ajilon  TYPE STANDARD TABLE OF ty_ajilon,
+      gt_emailid TYPE STANDARD TABLE OF ty_emailid,
+      gt_bdcdata TYPE STANDARD TABLE OF bdcdata,
+      gt_error   TYPE STANDARD TABLE OF ty_error,
+      gt_succe   TYPE STANDARD TABLE OF ty_error,
+      gt_erred   TYPE STANDARD TABLE OF ty_data,
+      gt_fieldcat  TYPE STANDARD TABLE OF slis_fieldcat_alv.
+
+*--Work Areas
+DATA: gw_data    TYPE ty_data,
+      gw_proj    TYPE ty_proj,
+      gw_ajilon  TYPE ty_ajilon,
+      gw_emailid TYPE ty_emailid,
+      gw_error   TYPE ty_error,
+      gw_succe   TYPE ty_error,
+      gw_erred   TYPE ty_data,
+      gw_fieldcat TYPE slis_fieldcat_alv.
+
+*--Variables
+DATA: gv_filename  TYPE localfile,
+      gv_pathname  TYPE localfile,
+      gv_error     TYPE i.
+
+*--Constants
+DATA: lc_star      TYPE epsf-epsfilnam VALUE '*',
+      lc_sign      TYPE sign           VALUE 'I',
+      lc_option    TYPE option         VALUE 'CP',
+      lc_low       TYPE c LENGTH 5     VALUE 'DFSI*',
+      lc_status    TYPE char8          VALUE 'ZPS00003',
+      lc_5100      TYPE char4          VALUE '5100',
+      lc_5000      TYPE char4          VALUE '5000',
+      lc_aud       TYPE char3          VALUE 'AUD',
+      lc_dl        TYPE char2          VALUE 'DL',
+      lc_3         TYPE c              VALUE '3',
+      lc_tag       TYPE char3          VALUE 'TAG',
+      lc_proj      TYPE char7          VALUE 'ZDFSI03',
+      lc_budj      TYPE char6          VALUE 'ZCLAIM',
+      lc_iv        TYPE char2          VALUE 'IV',
+      lc_x         TYPE c              VALUE 'X',
+      lc_wprof     TYPE char12         VALUE '000000000001',
+      lc_pprof     TYPE char6          VALUE 'ZDFSI2',
+      lc_d4        TYPE char2          VALUE 'D4',
+      lc_d5        TYPE char2          VALUE 'D5',
+      lc_d6        TYPE char2          VALUE 'D6',
+      lc_d7        TYPE char2          VALUE 'D7',
+      lc_ufk       TYPE char7          VALUE 'ZDFSICL',
+      lc_ocost     TYPE char5          VALUE 'OCOST',
+      lc_space     TYPE c              VALUE ' ',
+      lc_days      TYPE char4          VALUE 'DAY',
+      lc_projh     TYPE char13         VALUE 'Project Defn.'.
+
+*----------------------------------------------------------------------*
+* Selection Screen
+*----------------------------------------------------------------------*
+SELECTION-SCREEN BEGIN OF BLOCK text-b01
+                          WITH FRAME TITLE text-t01.
+PARAMETERS: p_pfile   TYPE localfile LOWER CASE,
+            p_afile   TYPE localfile LOWER CASE. "file path
+SELECTION-SCREEN END OF BLOCK text-b01.
+******************************************************************************************************
+
+*&---------------------------------------------------------------------*
+*&      Form  ZGET_PC_FILE
+*&---------------------------------------------------------------------*
+*       Get the PC File
+*----------------------------------------------------------------------*
+FORM zget_pc_file.
+
+*--Get the PC File
+  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+    EXPORTING
+      fileoperation = 'W'
+    CHANGING
+      file_name     = p_pfile
+    EXCEPTIONS
+      mask_too_long = 1
+      OTHERS        = 2.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZREAD_INBOUND_FILE
+*&---------------------------------------------------------------------*
+*       Read the file from the path
+*----------------------------------------------------------------------*
+FORM zread_inbound_file.
+
+*--Upload from PC
+  IF NOT p_pfile IS INITIAL.
+    PERFORM zread_pc_file.
+  ELSE.
+*--Upload from Unix
+    PERFORM zread_as_file.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZREAD_AS_FILE
+*&---------------------------------------------------------------------*
+*       Read file from Application Server
+*----------------------------------------------------------------------*
+FORM zread_as_file .
+
+*--Upload from Application Server
+  DATA: lv_filename  TYPE localfile,
+        lv_path      TYPE salfile-longname,
+        lt_file      TYPE STANDARD TABLE OF tab512,
+        lw_file      TYPE tab512,
+        lt_tbl       TYPE TABLE OF salfldir,
+        lw_tbl       TYPE salfldir,
+        lv_seperator TYPE c,
+        lv_line      TYPE string,
+        lw_data      TYPE ty_data,
+        lv_dstoa     TYPE char13,
+        lv_datoc     TYPE char13,
+        lv_apamt     TYPE char13,
+        lv_coamt     TYPE char13,
+        lw_files     TYPE ty_files,
+        lv_afile     TYPE localfile.
+
+  CLEAR: lv_dstoa, lv_datoc, lv_apamt, lv_coamt.
+
+  CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+  lv_seperator = cl_abap_char_utilities=>horizontal_tab.
+
+*--Fetch the files from the server path
+  lv_path = p_afile.
+
+  CALL FUNCTION 'RZL_READ_DIR_LOCAL'
+    EXPORTING
+      name                     = lv_path
+    TABLES
+      file_tbl                 = lt_tbl
+   EXCEPTIONS
+     argument_error           = 1
+     not_found                = 2
+     no_admin_authority       = 3
+     OTHERS                   = 4.
+  IF sy-subrc IS INITIAL.
+    CLEAR: lw_tbl.
+    LOOP AT lt_tbl INTO lw_tbl
+                   WHERE name CP 'subside*'.
+      lw_files-file = lw_tbl-name.
+      APPEND lw_files TO gt_files.
+    ENDLOOP.
+*--Check if the file is present or not.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE text-e09 TYPE 'E'.
+      EXIT.
+    ENDIF.
+  ENDIF.
+
+*--Read the input file
+  CLEAR: lw_files, lw_file.
+  LOOP AT gt_files INTO lw_files.
+    lv_filename = lw_tbl-name.
+    CONCATENATE p_afile lv_filename INTO lv_afile.
+    OPEN DATASET lv_afile FOR INPUT IN TEXT MODE ENCODING DEFAULT.
+    IF sy-subrc = 0.
+      DO.
+        READ DATASET lv_afile INTO lw_file.
+        IF sy-subrc <> 0.
+          EXIT.
+        ENDIF.
+        IF sy-index EQ 1.
+          CONTINUE.
+        ENDIF.
+        APPEND lw_file TO lt_file.
+        CLEAR: lw_file, lw_files,
+               lv_filename.
+      ENDDO.
+      CLOSE DATASET lv_afile.
+    ELSE.
+      CLEAR: lv_afile, lw_files, lv_filename.
+      MESSAGE text-e01 TYPE 'E'.
+      EXIT.
+    ENDIF.
+    CLEAR: lv_afile.
+  ENDLOOP.
+
+*--Update the file into an internal table.
+  CHECK NOT lt_file[] IS INITIAL.
+
+  CLEAR: lw_file.
+  LOOP AT lt_file INTO lw_file.
+    lv_line = lw_file.
+    SHIFT lv_line RIGHT DELETING TRAILING
+cl_abap_char_utilities=>cr_lf.
+    SHIFT lv_line LEFT DELETING LEADING space.
+
+    SPLIT lv_line
+       AT lv_seperator
+     INTO lw_data-cltyp
+          lw_data-clnum
+          lw_data-cldes
+          lw_data-clsts
+          lw_data-cloff
+          lw_data-clnos
+          lw_data-regio
+          lw_data-settl
+          lv_dstoa
+          lv_datoc
+          lv_apamt
+          lw_data-curr1
+          lv_coamt
+          lw_data-curr2
+          lw_data-clrdt
+          lw_data-cladt
+          lw_data-amine
+          lw_data-copay.
+
+    lw_data-dstoa = lv_dstoa.
+    lw_data-datoc = lv_datoc.
+    lw_data-apamt = lv_apamt.
+    lw_data-coamt = lv_coamt.
+
+    APPEND lw_data TO gt_data.
+    CLEAR: lw_data, lv_line,lw_file,
+           lv_dstoa, lv_datoc, lv_apamt, lv_coamt.
+
+  ENDLOOP.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZREAD_PC_FILE
+*&---------------------------------------------------------------------*
+*       Read file from PC
+*----------------------------------------------------------------------*
+FORM zread_pc_file.
+
+  DATA: lv_pfile TYPE string,
+        lt_file  TYPE STANDARD TABLE OF tab512,
+        lw_file  TYPE tab512,
+        lw_data  TYPE ty_data,
+        lv_line  TYPE string,
+        lv_dstoa TYPE char13,
+        lv_datoc TYPE char13,
+        lv_apamt TYPE char13,
+        lv_coamt TYPE char13,
+        lv_seperator TYPE c.
+
+  CLEAR: lv_dstoa, lv_datoc, lv_apamt, lv_coamt.
+
+  IF NOT p_pfile IS INITIAL.
+
+    lv_pfile = p_pfile.
+
+    CALL FUNCTION 'GUI_UPLOAD'
+      EXPORTING
+        filename                      = lv_pfile
+       filetype                      = 'ASC'
+      TABLES
+        data_tab                      = lt_file
+     EXCEPTIONS
+       file_open_error               = 1
+       file_read_error               = 2
+       no_batch                      = 3
+       gui_refuse_filetransfer       = 4
+       invalid_type                  = 5
+       no_authority                  = 6
+       unknown_error                 = 7
+       bad_data_format               = 8
+       header_not_allowed            = 9
+       separator_not_allowed         = 10
+       header_too_long               = 11
+       unknown_dp_error              = 12
+       access_denied                 = 13
+       dp_out_of_memory              = 14
+       disk_full                     = 15
+       dp_timeout                    = 16
+       OTHERS                        = 17.
+    IF sy-subrc IS INITIAL.
+*--Update the file into an internal table.
+      CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+      lv_seperator = cl_abap_char_utilities=>horizontal_tab.
+      CLEAR: lw_file.
+      LOOP AT lt_file INTO lw_file.
+        IF sy-tabix EQ 1.
+          CONTINUE.
+        ENDIF.
+        lv_line = lw_file.
+        SHIFT lv_line RIGHT DELETING TRAILING
+                      cl_abap_char_utilities=>cr_lf.
+        SHIFT lv_line LEFT DELETING LEADING space.
+
+        SPLIT lv_line
+           AT lv_seperator
+         INTO lw_data-cltyp
+              lw_data-clnum
+              lw_data-cldes
+              lw_data-clsts
+              lw_data-cloff
+              lw_data-clnos
+              lw_data-regio
+              lw_data-settl
+              lv_dstoa
+              lv_datoc
+              lv_apamt
+              lw_data-curr1
+              lv_coamt
+              lw_data-curr2
+              lw_data-clrdt
+              lw_data-cladt
+              lw_data-amine
+              lw_data-copay.
+
+        lw_data-dstoa = lv_dstoa.
+        lw_data-datoc = lv_datoc.
+        lw_data-apamt = lv_apamt.
+        lw_data-coamt = lv_coamt.
+
+        APPEND lw_data TO gt_data.
+        CLEAR: lw_data, lv_line,lw_file,
+               lv_dstoa, lv_datoc, lv_apamt, lv_coamt.
+
+      ENDLOOP.
+    ELSE.
+*--Throw an error message
+      MESSAGE text-e07 TYPE 'E'.
+      EXIT.
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFETCH_DATA
+*&---------------------------------------------------------------------*
+*       Fetch Data for selection
+*----------------------------------------------------------------------*
+FORM zfetch_data.
+
+  DATA:
+*        lw_rpsco  TYPE ty_rpsco,
+*        lw_rpsc   TYPE ty_rpsc,
+        lv_total  TYPE p LENGTH 15 DECIMALS 2,
+        lv_old_objnr TYPE objnr.
+*        lw_prps   TYPE ty_prps.
+
+*--Fetch existing projects from PROJ
+  SELECT pspnr
+         pspid
+         objnr
+    FROM proj
+    INTO TABLE gt_proj
+     FOR ALL ENTRIES IN gt_data
+   WHERE pspid EQ gt_data-clnum.
+
+  IF sy-subrc IS INITIAL.
+    SORT gt_proj BY pspid.
+  ENDIF.
+
+*  IF NOT gt_proj[] IS INITIAL.
+**--Fetch existing projects from PRPS
+*    SELECT pspnr AS pspnr,
+*           posid AS posid,
+*           objnr AS objnr
+*      FROM prps
+*      INTO TABLE @DATA(gt_prps)
+*       FOR ALL ENTRIES IN @gt_proj
+*     WHERE psphi EQ @gt_proj-pspnr.
+*
+*    IF sy-subrc IS INITIAL.
+*      SORT gt_prps BY posid.
+*    ENDIF.
+*  ENDIF.
+
+**--For all entries from PRPS fetch entries from RPSCO
+*  IF NOT gt_prps[] IS INITIAL.
+*
+*    SELECT objnr
+*           lednr
+*           gjahr
+*           wlp00
+*           wlp01
+*           wlp02
+*           wlp03
+*           wlp04
+*           wlp05
+*           wlp06
+*           wlp07
+*           wlp08
+*           wlp09
+*           wlp10
+*           wlp11
+*           wlp12
+*           wlp13
+*           wlp14
+*           wlp15
+*           wlp16
+*      FROM rpsco
+*      INTO TABLE gt_rpsco
+*       FOR ALL ENTRIES IN gt_prps
+*     WHERE objnr = gt_prps-objnr
+*       AND ( wrttp EQ '04' OR
+*             wrttp EQ '11' OR
+*             wrttp EQ '21' OR
+*             wrttp EQ '22' ).
+*
+*    IF sy-subrc IS INITIAL.
+*      SORT gt_rpsco BY objnr.
+*      CLEAR: lw_rpsco.
+*      LOOP AT gt_rpsco INTO lw_rpsco.
+*        CLEAR: lw_prps.
+*        READ TABLE gt_prps INTO lw_prps
+*                WITH KEY objnr = lw_rpsco-objnr.
+*        IF sy-subrc IS INITIAL.
+*          lw_rpsc-posid = lw_prps-posid.
+*        ENDIF.
+*        IF lv_old_objnr EQ lw_rpsco-objnr.
+*          lw_rpsc-objnr = lw_rpsco-objnr.
+*          lw_rpsc-lednr = lw_rpsco-lednr.
+*          lv_total = lv_total + lw_rpsco-wlp01 + lw_rpsco-wlp02 +
+*                     lw_rpsco-wlp03 + lw_rpsco-wlp04 + lw_rpsco-wlp05 +
+*                     lw_rpsco-wlp06 + lw_rpsco-wlp07 + lw_rpsco-wlp08 +
+*                     lw_rpsco-wlp09 + lw_rpsco-wlp10 + lw_rpsco-wlp11 +
+*                     lw_rpsco-wlp12 + lw_rpsco-wlp13 + lw_rpsco-wlp14 +
+*                     lw_rpsco-wlp15 + lw_rpsco-wlp16.
+*          lw_rpsc-total = lv_total.
+*          COLLECT lw_rpsc INTO gt_rpsc.
+*          CLEAR: lw_rpsc.
+*        ELSE.
+*          CLEAR: lv_old_objnr.
+*          lw_rpsc-objnr = lw_rpsco-objnr.
+*          lw_rpsc-lednr = lw_rpsco-lednr.
+*          lv_total = lv_total + lw_rpsco-wlp01 + lw_rpsco-wlp02 +
+*                     lw_rpsco-wlp03 + lw_rpsco-wlp04 + lw_rpsco-wlp05 +
+*                     lw_rpsco-wlp06 + lw_rpsco-wlp07 + lw_rpsco-wlp08 +
+*                     lw_rpsco-wlp09 + lw_rpsco-wlp10 + lw_rpsco-wlp11 +
+*                     lw_rpsco-wlp12 + lw_rpsco-wlp13 + lw_rpsco-wlp14 +
+*                     lw_rpsco-wlp15 + lw_rpsco-wlp16.
+*          lw_rpsc-total = lv_total.
+*          lv_old_objnr = lw_rpsco-objnr.
+*          COLLECT lw_rpsc INTO gt_rpsc.
+*          CLEAR: lw_rpsc.
+*        ENDIF.
+*      ENDLOOP.
+*    ENDIF.
+*  ENDIF.
+
+*--Fetch entries from the Mapping table ZPS_AJILON_STS
+  SELECT zajsts
+         zprps
+         zprpu
+         zaras
+         zarau
+         zoros
+         zorou
+    FROM zps_ajilon_sts
+    INTO TABLE gt_ajilon.
+  IF sy-subrc IS INITIAL.
+    SORT gt_ajilon.
+  ENDIF.
+
+*--Fetch the pernrs of the email ids from the inbound
+  SELECT pernr
+         usrid_long
+    FROM pa0105
+    INTO TABLE gt_emailid
+ FOR ALL ENTRIES IN gt_data
+   WHERE subty      = '0010'
+     AND usrid_long = gt_data-cloff.
+  IF sy-subrc IS INITIAL.
+    SORT gt_emailid BY pernr.
+    DELETE ADJACENT DUPLICATES FROM gt_emailid.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZUPDATE_PS_DATA
+*&---------------------------------------------------------------------*
+*       Update Master data/Status and Budget Changes
+*----------------------------------------------------------------------*
+FORM zupdate_ps_data .
+
+*--Update the PS Master Data
+  CLEAR: gw_data.
+  LOOP AT gt_data INTO gw_data.
+
+    CLEAR: gw_proj.
+    READ TABLE gt_proj INTO gw_proj
+               WITH KEY pspid = gw_data-clnum.
+    IF sy-subrc IS INITIAL.
+*--Modifying existing project
+      PERFORM zchange_proj_wbs.
+    ELSE.
+*--Create new project
+      PERFORM zcreate_proj_wbs.
+    ENDIF.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZCHANGE_PROJ_WBS
+*&---------------------------------------------------------------------*
+*      Change existing project/wbs definition
+*----------------------------------------------------------------------*
+FORM zchange_proj_wbs .
+
+  DATA: lw_proj          TYPE ty_proj,
+        lw_proj_defn     TYPE bapi_bus2001_chg,
+        lw_proj_defn_upd TYPE bapi_bus2001_upd,
+        lt_return      TYPE TABLE OF bapiret2,
+        lw_return      TYPE  bapiret2,
+        lw_return1     TYPE bapireturn1,
+        lt_extin       TYPE TABLE OF bapiparex,
+        lt_extout      TYPE TABLE OF bapiparex,
+        lw_proj_defin  TYPE bapi_project_definition_ex,
+        lt_wbs_elem    TYPE TABLE OF bapi_wbs_element_exp,
+        lw_wbs_elem    TYPE bapi_wbs_element_exp,
+        lt_wbs_hier    TYPE TABLE OF bapi_wbs_hierarchie,
+        lv_pchange     TYPE flag,
+        lv_wchange     TYPE flag,
+        lv_description TYPE string,
+        lt_wbs_element TYPE TABLE OF bapi_bus2054_chg,
+        lw_wbs_element TYPE bapi_bus2054_chg,
+        lt_update_wbs_element TYPE TABLE OF bapi_bus2054_upd,
+        lw_update_wbs_element TYPE bapi_bus2054_upd.
+
+
+*--Modify existing project
+  CLEAR: gw_ajilon, gv_error.
+
+  TRANSLATE gw_data-clsts TO UPPER CASE.
+
+  CLEAR: gw_ajilon.
+  READ TABLE gt_ajilon INTO gw_ajilon
+             WITH KEY zajsts = gw_data-clsts.
+  IF sy-subrc IS INITIAL.
+
+*--Responsible Person
+    CLEAR: gw_emailid.
+    READ TABLE gt_emailid INTO gw_emailid
+                         WITH KEY usrid = gw_data-cloff.
+
+    CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+    CALL FUNCTION 'BAPI_PROJECT_GETINFO'
+     EXPORTING
+       project_definition           = gw_data-clnum
+     IMPORTING
+       e_project_definition         = lw_proj_defin
+       return                       = lw_return1
+     TABLES
+       e_wbs_element_table          = lt_wbs_elem
+       e_wbs_hierarchie_table       = lt_wbs_hier.
+    IF lw_return1 IS INITIAL.
+*--Update workarea
+      lv_pchange = ' '.
+      MOVE-CORRESPONDING lw_proj_defin TO lw_proj_defn.
+
+*--Description
+      IF lw_proj_defin-description NE gw_data-cldes.
+        lw_proj_defn-description     = gw_data-cldes.
+        lw_proj_defn_upd-description = lc_x.
+        lv_pchange = lc_x.
+      ELSE.
+        lw_proj_defn-description = lw_proj_defin-description.
+      ENDIF.
+
+*--Responsible Person
+      IF NOT gw_emailid-pernr IS INITIAL.
+        IF lw_proj_defin-responsible_no NE gw_emailid-pernr.
+          lw_proj_defn-responsible_no     = gw_emailid-pernr.
+          lw_proj_defn_upd-responsible_no = lc_x.
+          lv_pchange = lc_x.
+        ELSE.
+          lw_proj_defn-responsible_no = lw_proj_defin-responsible_no.
+        ENDIF.
+      ENDIF.
+
+    ENDIF.
+
+    IF lv_pchange = lc_x.
+*--Create new project definition
+      CALL FUNCTION 'BAPI_BUS2001_CHANGE'
+        EXPORTING
+          i_project_definition           = lw_proj_defn
+          i_project_definition_upd       = lw_proj_defn_upd
+       TABLES
+         et_return                      = lt_return
+         extensionin                    = lt_extin
+         extensionout                   = lt_extout.
+    ENDIF.
+*--Fill in the error messages
+    CLEAR: lw_return.
+    LOOP AT lt_return INTO lw_return
+                     WHERE type = 'E'
+                        OR type = 'A'.
+      gw_error-eleme = lw_return-message_v2.
+      gw_error-descr = lw_return-message_v1.
+      gw_error-messg = lw_return-message.
+      APPEND gw_error TO gt_error.
+      CLEAR: gw_error.
+
+      gw_erred = gw_data.
+      APPEND gw_erred TO gt_erred.
+      CLEAR: gw_erred.
+
+    ENDLOOP.
+    IF NOT sy-subrc IS INITIAL.
+*--Change WBS definition
+      CLEAR: lw_wbs_elem, lv_wchange.
+      lv_wchange = ' '.
+      LOOP AT lt_wbs_elem INTO lw_wbs_elem
+                         WHERE project_definition = gw_data-clnum.
+
+*--Fill in table
+        REFRESH: lt_return, lt_extin,lt_extout.
+
+*--WBS Element
+        MOVE-CORRESPONDING lw_wbs_elem TO lw_wbs_element.
+        lw_update_wbs_element-wbs_element = lw_wbs_elem-wbs_element.
+
+*--Description
+        CLEAR: lv_description.
+        IF lw_wbs_elem-proj_type = 'D4'.
+          lv_description = gw_data-clnum.
+        ELSEIF lw_wbs_elem-proj_type = 'D5'.
+          CONCATENATE gw_data-clnum '- Assess'
+                 INTO lv_description SEPARATED BY space.
+        ELSEIF lw_wbs_elem-proj_type = 'D6'.
+          IF gw_data-cltyp NE 'Normal'.
+            CONCATENATE gw_data-clnum '- Fix'
+                   INTO lv_description SEPARATED BY space.
+          ELSE.
+            CONCATENATE gw_data-clnum '- Settle/Fix'
+                   INTO lv_description SEPARATED BY space.
+          ENDIF.
+        ELSEIF lw_wbs_elem-proj_type = 'D7'.
+          CONCATENATE gw_data-clnum '- Buy'
+                 INTO lv_description SEPARATED BY space.
+        ENDIF.
+
+        IF lw_wbs_elem-description NE lv_description.
+          lw_wbs_element-description        = lv_description.
+          lw_update_wbs_element-description = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+          lw_wbs_element-description = lw_wbs_elem-description.
+        ENDIF.
+
+*--Responsible Person
+        IF lw_wbs_elem-responsible_no NE gw_emailid-pernr.
+          lw_wbs_element-responsible_no        = gw_emailid-pernr.
+          lw_update_wbs_element-responsible_no = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+          lw_wbs_element-responsible_no = lw_wbs_elem-responsible_no.
+        ENDIF.
+
+*--Claim Category
+        IF lw_wbs_elem-user_field_char20_1 NE gw_data-cltyp.
+          gw_error-eleme = gw_data-clnum.
+          gw_error-descr = 'Claim Type'.
+          gw_error-messg = text-e06.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+          EXIT.
+        ELSE.
+          lw_wbs_element-user_field_char20_1 =
+                                     lw_wbs_elem-user_field_char20_1.
+        ENDIF.
+
+*--North/South
+        IF lw_wbs_elem-user_field_char20_2 NE gw_data-clnos.
+          lw_wbs_element-user_field_char20_2        = gw_data-clnos.
+          lw_update_wbs_element-user_field_char20_2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+          lw_wbs_element-user_field_char20_2 =
+                                     lw_wbs_elem-user_field_char20_2.
+        ENDIF.
+
+*--Region
+        IF lw_wbs_elem-user_field_char10_1 NE gw_data-regio.
+          lw_wbs_element-user_field_char10_1        = gw_data-regio.
+          lw_update_wbs_element-user_field_char10_1 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+          lw_wbs_element-user_field_char10_1 =
+                                        lw_wbs_elem-user_field_char10_1.
+        ENDIF.
+
+*--Settlement Method
+        IF lw_wbs_elem-user_field_char10_2 NE gw_data-settl.
+          lw_wbs_element-user_field_char10_2        = gw_data-settl.
+          lw_update_wbs_element-user_field_char10_2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+          lw_wbs_element-user_field_char10_2 =
+                                   lw_wbs_elem-user_field_char10_2.
+        ENDIF.
+
+*--Days:Submit to Accept
+        IF lw_wbs_elem-user_field_quan1 NE gw_data-dstoa.
+          lw_wbs_element-user_field_quan1        = gw_data-dstoa.
+          lw_update_wbs_element-user_field_quan1 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_quan1 = lw_wbs_elem-user_field_quan1.
+        ENDIF.
+
+*--Days:Accept to Complete
+        IF lw_wbs_elem-user_field_quan2 NE gw_data-datoc.
+          lw_wbs_element-user_field_quan2        = gw_data-datoc.
+          lw_update_wbs_element-user_field_quan2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_quan2 = lw_wbs_elem-user_field_quan2.
+        ENDIF.
+
+*--Approval Amount
+        IF lw_wbs_elem-user_field_curr1 NE gw_data-apamt.
+          lw_wbs_element-user_field_curr1        = gw_data-apamt.
+          lw_update_wbs_element-user_field_curr1 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_curr1 = lw_wbs_elem-user_field_curr1.
+        ENDIF.
+
+*--Collier Amount
+        IF lw_wbs_elem-user_field_curr2 NE gw_data-coamt.
+          lw_wbs_element-user_field_curr2        = gw_data-coamt.
+          lw_update_wbs_element-user_field_curr2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_curr2 = lw_wbs_elem-user_field_curr2.
+        ENDIF.
+
+*--Claim Received Date
+        IF gw_data-clrdt+0(2) EQ '  '.
+          gw_data-clrdt = '00000000'.
+        ENDIF.
+
+        IF lw_wbs_elem-user_field_date1 NE gw_data-clrdt.
+          lw_wbs_element-user_field_date1        = gw_data-clrdt.
+          lw_update_wbs_element-user_field_date1 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_date1 = lw_wbs_elem-user_field_date1.
+        ENDIF.
+
+*--Claim Acceptance Date
+        IF gw_data-cladt+0(2) EQ '  '.
+          gw_data-cladt = '00000000'.
+        ENDIF.
+
+        IF lw_wbs_elem-user_field_date2 NE gw_data-cladt.
+          lw_wbs_element-user_field_date2        = gw_data-cladt.
+          lw_update_wbs_element-user_field_date2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_date2 = lw_wbs_elem-user_field_date2.
+        ENDIF.
+
+*--Active Mine?
+        IF lw_wbs_elem-user_field_flag1 NE gw_data-amine.
+          lw_wbs_element-user_field_flag1        = gw_data-amine.
+          lw_update_wbs_element-user_field_flag1 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_flag1 = lw_wbs_elem-user_field_flag1.
+        ENDIF.
+
+*--Pay and Reclaim flag
+        IF lw_wbs_elem-user_field_flag2 NE gw_data-copay.
+          lw_wbs_element-user_field_flag2        = gw_data-copay.
+          lw_update_wbs_element-user_field_flag2 = lc_x.
+          lv_wchange = lc_x.
+        ELSE.
+         lw_wbs_element-user_field_flag2 = lw_wbs_elem-user_field_flag2.
+        ENDIF.
+
+        APPEND lw_wbs_element TO lt_wbs_element.
+        APPEND lw_update_wbs_element TO lt_update_wbs_element.
+        CLEAR: lw_wbs_element, lw_update_wbs_element.
+      ENDLOOP.
+
+      IF lv_wchange = lc_x.
+        CALL FUNCTION 'BAPI_BUS2054_CHANGE_MULTI'
+          EXPORTING
+           i_project_definition      = lw_proj_defn-project_definition
+         TABLES
+           it_wbs_element            = lt_wbs_element
+           it_update_wbs_element     = lt_update_wbs_element
+           et_return                 = lt_return
+           extensionin               = lt_extin
+           extensionout              = lt_extout.
+        CLEAR: lw_return, gw_error.
+        LOOP AT lt_return INTO lw_return
+                         WHERE type = 'E'
+                            OR type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+        ENDLOOP.
+        IF NOT sy-subrc IS INITIAL.
+          REFRESH: lt_return.
+          CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+           TABLES
+             et_return       = lt_return.
+        ENDIF.
+        CLEAR: lw_return, gw_error.
+        LOOP AT lt_return INTO lw_return
+                         WHERE type = 'E'
+                            OR type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+
+        ENDLOOP.
+        IF NOT sy-subrc IS INITIAL.
+          CLEAR: gw_succe.
+          gw_succe-eleme = gw_data-clnum.
+          gw_succe-descr = 'Claim'.
+          gw_succe-messg = text-s02.
+          APPEND gw_succe TO gt_succe.
+          CLEAR: gw_succe.
+
+          CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+          WAIT UP TO 1 SECONDS.
+
+        ELSE.
+          gw_erred = gw_data.
+          APPEND gw_erred TO gt_erred.
+          CLEAR: gw_erred.
+
+          gv_error = gv_error + 1.
+        ENDIF.
+      ELSEIF lv_pchange EQ lc_x.
+        REFRESH: lt_return.
+        CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+         TABLES
+           et_return       = lt_return.
+        CLEAR: lw_return, gw_error.
+        LOOP AT lt_return INTO lw_return
+                         WHERE type = 'E'
+                            OR type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+
+        ENDLOOP.
+        IF NOT sy-subrc IS INITIAL.
+          CLEAR: gw_succe.
+          gw_succe-eleme = gw_data-clnum.
+          gw_succe-descr = 'Claim'.
+          gw_succe-messg = text-s02.
+          APPEND gw_succe TO gt_succe.
+          CLEAR: gw_succe.
+
+          CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+          WAIT UP TO 1 SECONDS.
+
+        ELSE.
+          gw_erred = gw_data.
+          APPEND gw_erred TO gt_erred.
+          CLEAR: gw_erred.
+
+          gv_error = gv_error + 1.
+        ENDIF.
+      ENDIF.
+    ELSE.
+      gw_erred = gw_data.
+      APPEND gw_erred TO gt_erred.
+      CLEAR: gw_erred.
+
+      gv_error = gv_error + 1.
+    ENDIF.
+
+    IF lv_pchange IS INITIAL AND
+       lv_wchange IS INITIAL.
+      gw_succe-eleme = gw_data-clnum.
+      gw_succe-descr = 'Claim'.
+      gw_succe-messg = text-s04.
+      APPEND gw_succe TO gt_succe.
+      CLEAR: gw_succe.
+    ENDIF.
+
+    IF gv_error EQ 0.
+*--Change existing Status
+      PERFORM zchange_status_proj_wbs.
+
+*--Change Budget
+      PERFORM zchange_budget_proj_wbs.
+
+      CLEAR: gv_error.
+    ENDIF.
+
+  ELSE.
+
+    gw_error-eleme = gw_data-clnum.
+    gw_error-descr = 'Status'.
+    CONCATENATE 'Status' gw_data-clsts text-e05
+           INTO gw_error-messg SEPARATED BY space.
+    APPEND gw_error TO gt_error.
+    CLEAR: gw_error.
+
+    gw_erred = gw_data.
+    APPEND gw_erred TO gt_erred.
+    CLEAR: gw_erred.
+
+    gv_error = gv_error + 1.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZCHANGE_STATUS_PROJ_WBS
+*&---------------------------------------------------------------------*
+*       Change Project/WBS Status
+*----------------------------------------------------------------------*
+FORM zchange_status_proj_wbs.
+
+  DATA: lv_projdefn TYPE bapipr-project_definition,
+        lt_systs    TYPE TABLE OF bapi_system_status,
+        lt_ussts    TYPE TABLE OF bapi_user_status,
+        lw_systs    TYPE bapi_system_status,
+        lw_ussts    TYPE bapi_user_status,
+        lv_systs    TYPE bapi_system_status_text,
+        lv_ussts    TYPE bapi_user_status_text,
+        lw_return   TYPE bapireturn1,
+        lv_prdef    TYPE bapipr-project_definition,
+        lt_result   TYPE TABLE OF bapi_status_result,
+        lw_result   TYPE bapi_status_result,
+        lt_return1  TYPE TABLE OF bapiret2,
+        lw_return1  TYPE bapiret2,
+        lv_wbs      TYPE string,
+        lw_wbs_system TYPE bapi_wbs_mnt_system_status,
+        lt_wbs_system TYPE TABLE OF bapi_wbs_mnt_system_status,
+        lt_wbs_user   TYPE TABLE OF bapi_wbs_mnt_user_status,
+        lw_wbs_user   TYPE bapi_wbs_mnt_user_status,
+        lv_userst     TYPE bapi_user_status-user_status,
+        lv_systst     TYPE bapi_system_status-system_status,
+        lv_space      TYPE bapi_system_status-system_status,
+        lv_times      TYPE i,
+        lt_wbs_elements TYPE TABLE OF bapi_wbs_elements,
+        lt_system_status TYPE TABLE OF bapi_wbs_system_status,
+        lt_user_status   TYPE TABLE OF bapi_wbs_user_status,
+        lw_wbs_elements TYPE bapi_wbs_elements,
+        lw_system_status TYPE bapi_wbs_system_status,
+        lw_user_status   TYPE bapi_wbs_user_status.
+
+  lv_projdefn = gw_data-clnum.
+
+  IF NOT gw_ajilon IS INITIAL.
+
+*--Update existing claim status
+    CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+    CALL FUNCTION 'BAPI_BUS2001_GET_STATUS'
+      EXPORTING
+        project_definition       = lv_projdefn
+      IMPORTING
+        return                   = lw_return
+      TABLES
+        e_system_status          = lt_systs
+        e_user_status            = lt_ussts.
+    IF lw_return IS INITIAL.
+      CLEAR: lw_systs, lw_ussts.
+      READ TABLE lt_systs INTO lw_systs INDEX 1.
+      lv_systs = lw_systs-system_status.
+      READ TABLE lt_ussts INTO lw_ussts INDEX 1.
+      lv_ussts = lw_ussts-user_status.
+    ENDIF.
+
+*--Set Project Header Status.
+    IF ( gw_ajilon-zprpu = 'ACCP' OR
+         gw_ajilon-zprpu = 'PAYF' OR
+         gw_ajilon-zprpu = 'ASSE' OR
+         gw_ajilon-zprpu = 'OFFR' ) AND
+       lv_ussts NE gw_ajilon-zprpu.
+
+      IF lv_systs EQ 'TECO' OR
+         lv_systs EQ 'CLSD'.
+
+        lv_userst = gw_ajilon-zprpu.
+        lv_systst = lv_systs.
+
+        IF lv_systs EQ 'CLSD'.
+          lv_times = '2'.
+        ELSE.
+          lv_times = '1'.
+        ENDIF.
+
+        DO lv_times TIMES.
+          IF sy-index EQ '2'.
+            lv_systst = 'TECO'.
+*--Update existing claim status
+            CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+          ENDIF.
+
+          CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+            EXPORTING
+             project_definition       = lv_projdefn
+             undo_system_status       = lv_systst
+             set_user_status          = lv_userst
+           IMPORTING
+             return                   = lw_return
+           TABLES
+             e_result                 = lt_result.
+
+
+          REFRESH: lt_result, lt_wbs_system.
+          CLEAR: lw_wbs_system, lv_wbs,
+                 lw_return, lw_result.
+
+          lv_wbs = gw_data-clnum.
+          lw_wbs_system-wbs_element = lv_wbs.
+          lw_wbs_system-undo_system_status = lv_systst.
+          APPEND lw_wbs_system TO lt_wbs_system.
+          CLEAR: lw_wbs_system.
+
+          CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+          lw_wbs_system-wbs_element = lv_wbs.
+          lw_wbs_system-undo_system_status = lv_systst.
+          APPEND lw_wbs_system TO lt_wbs_system.
+          CLEAR: lw_wbs_system.
+
+          CONCATENATE gw_data-clnum '-02' INTO lv_wbs.
+          lw_wbs_system-wbs_element = lv_wbs.
+          lw_wbs_system-undo_system_status = lv_systst.
+          APPEND lw_wbs_system TO lt_wbs_system.
+          CLEAR: lw_wbs_system.
+
+          IF gw_data-cltyp EQ 'Normal'.
+            CONCATENATE gw_data-clnum '-03' INTO lv_wbs.
+            lw_wbs_system-wbs_element = lv_wbs.
+            lw_wbs_system-undo_system_status = lv_systst.
+            APPEND lw_wbs_system TO lt_wbs_system.
+            CLEAR: lw_wbs_system.
+          ENDIF.
+
+*--Update the WBS element Status
+          CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+           IMPORTING
+              return                    = lw_return
+           TABLES
+              i_wbs_system_status       = lt_wbs_system
+              e_result                  = lt_result.
+          IF lw_return IS INITIAL.
+
+            IF lv_times EQ '2' AND
+               sy-index EQ '1'.
+              CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+               TABLES
+                 et_return       = lt_return1.
+              CLEAR: lw_return1.
+              LOOP AT lt_return1 INTO lw_return1
+                              WHERE type = 'E'
+                                 OR type = 'A'.
+                gw_error-eleme = lw_return1-message_v2.
+                gw_error-descr = lw_return1-message_v1.
+                gw_error-messg = lw_return1-message.
+                APPEND gw_error TO gt_error.
+                CLEAR: gw_error, lw_return1.
+
+                gw_erred = gw_data.
+                APPEND gw_erred TO gt_erred.
+                CLEAR: gw_erred.
+              ENDLOOP.
+              IF NOT sy-subrc IS INITIAL.
+                CLEAR: lw_return1.
+                READ TABLE lt_return1 INTO lw_return1
+                      WITH KEY type = 'S'.
+                gw_succe-eleme = gw_data-clnum.
+                gw_succe-descr = lw_return1-message_v1.
+                gw_succe-messg = text-s05.
+                APPEND gw_succe TO gt_succe.
+                CLEAR: gw_succe, lw_return1.
+
+                CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+                WAIT UP TO 1 SECONDS.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+        ENDDO.
+
+      ELSE.
+
+        IF ( gw_ajilon-zprpu = 'ACCP' OR
+             gw_ajilon-zprpu = 'PAYF' ).
+          CLEAR: lv_systst, lv_userst.
+          lv_userst = gw_ajilon-zprpu.
+          lv_systst = gw_ajilon-zprps.
+
+*--Set project header System and User Status
+          CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+            EXPORTING
+              project_definition      = lv_projdefn
+             set_system_status        = lv_systst
+             set_user_status          = lv_userst
+           IMPORTING
+             return                   = lw_return
+           TABLES
+             e_result                 = lt_result.
+          CLEAR: lw_result, gw_error.
+          IF lw_return-type = 'E' OR
+             lw_return-type = 'A'.
+            gw_error-eleme = lw_return-message_v2.
+            gw_error-descr = lw_return-message_v1.
+            gw_error-messg = lw_return-message.
+            APPEND gw_error TO gt_error.
+            CLEAR: gw_error.
+          ENDIF.
+
+        ELSEIF ( gw_ajilon-zprpu = 'ASSE' OR
+                 gw_ajilon-zprpu = 'OFFR' ).
+
+          CLEAR: lv_userst, lw_return, gw_error, gw_erred.
+          REFRESH: lt_result.
+
+          lv_userst = gw_ajilon-zprpu.
+
+*--Update existing claim status
+          CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+*--Set project header System and User Status
+          CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+            EXPORTING
+              project_definition      = lv_projdefn
+              set_user_status          = lv_userst
+           IMPORTING
+             return                   = lw_return
+           TABLES
+             e_result                 = lt_result.
+          CLEAR: lw_result, gw_error.
+          IF lw_return-type = 'E' OR
+             lw_return-type = 'A'.
+            gw_error-eleme = lw_return-message_v2.
+            gw_error-descr = lw_return-message_v1.
+            gw_error-messg = lw_return-message.
+            APPEND gw_error TO gt_error.
+            CLEAR: gw_error.
+
+            gw_erred = gw_data.
+            APPEND gw_erred TO gt_erred.
+            CLEAR: gw_erred.
+          ELSE.
+            REFRESH: lt_result.
+            CLEAR: lw_wbs_system, lv_wbs,
+                   lw_return, lw_result.
+
+            CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+            lw_wbs_system-wbs_element = lv_wbs.
+            lw_wbs_system-set_system_status = gw_ajilon-zaras.
+            APPEND lw_wbs_system TO lt_wbs_system.
+
+            CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+             IMPORTING
+                return                    = lw_return
+             TABLES
+                i_wbs_system_status       = lt_wbs_system
+                e_result                  = lt_result.
+            CLEAR: lw_result, gw_error.
+            IF lw_return-type = 'E' OR
+               lw_return-type = 'A'.
+              gw_error-eleme = lw_return-message_v2.
+              gw_error-descr = lw_return-message_v1.
+              gw_error-messg = lw_return-message.
+              APPEND gw_error TO gt_error.
+              CLEAR: gw_error.
+            ENDIF.
+          ENDIF.
+        ENDIF.
+      ENDIF.
+    ELSEIF ( gw_ajilon-zprpu = 'CLSD' OR
+           gw_ajilon-zprpu = 'REJC' OR
+           gw_ajilon-zprpu = 'WTHD' ) AND
+           lv_ussts NE gw_ajilon-zprpu.
+
+      IF gw_ajilon-zprpu = 'CLSD' AND
+         ( lv_ussts NE 'TECO' OR
+           lv_ussts NE 'CLSD' ).
+
+        CLEAR: lv_systst, lv_userst.
+        lv_userst = 'CLSD'.
+        lv_systst = 'TECO'.
+
+*--Set project header System and User Status
+        CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+          EXPORTING
+           project_definition      = lv_projdefn
+           set_system_status        = lv_systst
+           set_user_status          = lv_userst
+         IMPORTING
+           return                   = lw_return
+         TABLES
+           e_result                 = lt_result.
+        CLEAR: lw_result, gw_error.
+        IF lw_return-type = 'E' OR
+           lw_return-type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+        ENDIF.
+
+      ELSE.
+
+        CLEAR: lv_systst, lv_userst.
+        lv_userst = gw_ajilon-zprpu.
+        lv_systst = gw_ajilon-zprps.
+
+*--Set project header System and User Status
+        CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+          EXPORTING
+            project_definition      = lv_projdefn
+           set_system_status        = lv_systst
+           set_user_status          = lv_userst
+         IMPORTING
+           return                   = lw_return
+         TABLES
+           e_result                 = lt_result.
+        CLEAR: lw_result, gw_error.
+        IF lw_return-type = 'E' OR
+           lw_return-type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+*--Get the WBS system status
+    CLEAR: lv_wbs, lw_wbs_elements.
+    REFRESH: lt_wbs_elements.
+
+    lv_wbs = gw_data-clnum.
+    lw_wbs_elements-wbs_element = lv_wbs.
+    APPEND lw_wbs_elements TO lt_wbs_elements.
+    CLEAR: lw_wbs_elements.
+
+    CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+    lw_wbs_elements-wbs_element = lv_wbs.
+    APPEND lw_wbs_elements TO lt_wbs_elements.
+    CLEAR: lw_wbs_elements.
+
+    CONCATENATE gw_data-clnum '-02' INTO lv_wbs.
+    lw_wbs_elements-wbs_element = lv_wbs.
+    APPEND lw_wbs_elements TO lt_wbs_elements.
+    CLEAR: lw_wbs_elements.
+
+    IF gw_data-cltyp EQ 'Normal'.
+      CONCATENATE gw_data-clnum '-03' INTO lv_wbs.
+      lw_wbs_elements-wbs_element = lv_wbs.
+      APPEND lw_wbs_elements TO lt_wbs_elements.
+      CLEAR: lw_wbs_elements.
+    ENDIF.
+
+    CALL FUNCTION 'BAPI_BUS2054_GET_STATUS'
+     IMPORTING
+       return                = lw_return
+      TABLES
+        i_wbs_elements        = lt_wbs_elements
+       e_user_status         = lt_user_status
+       e_result              = lt_result
+              .
+
+*--Update the WBS status if on hold.
+    IF gw_ajilon-zarau EQ 'HCLM' OR
+       gw_ajilon-zarau EQ 'HDIS' OR
+       gw_ajilon-zarau EQ 'HSUB'.
+
+      REFRESH: lt_result.
+      CLEAR: lw_wbs_user, lv_wbs,
+             lw_return, lw_result.
+
+      lw_wbs_user-wbs_element = gw_data-clnum.
+      lw_wbs_user-set_user_status = gw_ajilon-zarau.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+      CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+      lw_wbs_user-wbs_element = lv_wbs.
+      lw_wbs_user-set_user_status = gw_ajilon-zarau.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+*--Set the WBS status
+      CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+       IMPORTING
+          return                    = lw_return
+       TABLES
+          i_wbs_user_status         = lt_wbs_user
+          e_result                  = lt_result.
+      CLEAR: lw_result, gw_error.
+      IF lw_return-type = 'E' OR
+         lw_return-type = 'A'.
+        gw_error-eleme = lw_return-message_v2.
+        gw_error-descr = lw_return-message_v1.
+        gw_error-messg = lw_return-message.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error.
+      ENDIF.
+
+    ELSE.
+
+      REFRESH: lt_result.
+      CLEAR: lw_wbs_user, lv_wbs,
+             lw_return, lw_result.
+
+      lw_wbs_user-wbs_element = gw_data-clnum.
+      CLEAR: lw_user_status.
+      READ TABLE lt_user_status INTO lw_user_status
+                            WITH KEY wbs_element = gw_data-clnum.
+      IF sy-subrc IS INITIAL.
+        lw_wbs_user-undo_user_status = lw_user_status-user_status.
+      ENDIF.
+      lw_wbs_user-set_user_status = space.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+      CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+      lw_wbs_user-wbs_element = lv_wbs.
+      CLEAR: lw_user_status.
+      READ TABLE lt_user_status INTO lw_user_status
+                            WITH KEY wbs_element = gw_data-clnum.
+      IF sy-subrc IS INITIAL.
+        lw_wbs_user-undo_user_status = lw_user_status-user_status.
+      ENDIF.
+      lw_wbs_user-set_user_status = space.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+*--Set the WBS status
+      CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+       IMPORTING
+          return                    = lw_return
+       TABLES
+          i_wbs_user_status         = lt_wbs_user
+          e_result                  = lt_result.
+      CLEAR: lw_result, gw_error.
+      IF lw_return-type = 'E' OR
+         lw_return-type = 'A'.
+        gw_error-eleme = lw_return-message_v2.
+        gw_error-descr = lw_return-message_v1.
+        gw_error-messg = lw_return-message.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error.
+      ENDIF.
+    ENDIF.
+
+    IF gw_ajilon-zorou EQ 'HCLM' OR
+       gw_ajilon-zorou EQ 'HDIS' OR
+       gw_ajilon-zorou EQ 'HSUB'.
+
+      REFRESH: lt_result.
+      CLEAR: lw_wbs_user, lv_wbs,
+             lw_return, lw_result.
+
+      CONCATENATE gw_data-clnum '-02' INTO lv_wbs.
+      lw_wbs_user-wbs_element = lv_wbs.
+      lw_wbs_user-set_user_status = gw_ajilon-zorou.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+      IF gw_data-cltyp = 'Normal'.
+        CONCATENATE gw_data-clnum '-03' INTO lv_wbs.
+        lw_wbs_user-wbs_element = lv_wbs.
+        lw_wbs_user-set_user_status = gw_ajilon-zorou.
+        APPEND lw_wbs_user TO lt_wbs_user.
+        CLEAR: lw_wbs_user.
+      ENDIF.
+
+*--Set the WBS user status.
+      CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+       IMPORTING
+          return                    = lw_return
+       TABLES
+          i_wbs_user_status         = lt_wbs_user
+          e_result                  = lt_result.
+      CLEAR: lw_result, gw_error.
+      IF lw_return-type = 'E' OR
+         lw_return-type = 'A'.
+        gw_error-eleme = lw_return-message_v2.
+        gw_error-descr = lw_return-message_v1.
+        gw_error-messg = lw_return-message.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error.
+      ENDIF.
+
+    ELSE.
+
+      REFRESH: lt_result.
+      CLEAR: lw_wbs_user, lv_wbs,
+             lw_return, lw_result.
+
+      CONCATENATE gw_data-clnum '-02' INTO lv_wbs.
+      lw_wbs_user-wbs_element = lv_wbs.
+      CLEAR: lw_user_status.
+      READ TABLE lt_user_status INTO lw_user_status
+                            WITH KEY wbs_element = gw_data-clnum.
+      IF sy-subrc IS INITIAL.
+        lw_wbs_user-undo_user_status = lw_user_status-user_status.
+      ENDIF.
+      lw_wbs_user-set_user_status = space.
+      APPEND lw_wbs_user TO lt_wbs_user.
+      CLEAR: lw_wbs_user.
+
+      IF gw_data-cltyp = 'Normal'.
+        CONCATENATE gw_data-clnum '-03' INTO lv_wbs.
+        lw_wbs_user-wbs_element = lv_wbs.
+        CLEAR: lw_user_status.
+        READ TABLE lt_user_status INTO lw_user_status
+                              WITH KEY wbs_element = gw_data-clnum.
+        IF sy-subrc IS INITIAL.
+          lw_wbs_user-undo_user_status = lw_user_status-user_status.
+        ENDIF.
+        lw_wbs_user-set_user_status = space.
+        APPEND lw_wbs_user TO lt_wbs_user.
+        CLEAR: lw_wbs_user.
+      ENDIF.
+
+*--Update user status
+      CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+       IMPORTING
+          return                    = lw_return
+       TABLES
+          i_wbs_user_status         = lt_wbs_user
+          e_result                  = lt_result.
+      CLEAR: lw_result, gw_error.
+      IF lw_return-type = 'E' OR
+         lw_return-type = 'A'.
+        gw_error-eleme = lw_return-message_v2.
+        gw_error-descr = lw_return-message_v1.
+        gw_error-messg = lw_return-message.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error.
+      ENDIF.
+    ENDIF.
+
+    IF sy-subrc IS INITIAL.
+      REFRESH: lt_return1.
+      CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+       TABLES
+         et_return       = lt_return1.
+    ENDIF.
+    CLEAR: lw_return1, gw_error.
+    LOOP AT lt_return1 INTO lw_return1
+                      WHERE type = 'E'
+                         OR type = 'A'.
+      gw_error-eleme = lw_return1-message_v2.
+      gw_error-descr = lw_return1-message_v1.
+      gw_error-messg = lw_return1-message.
+      APPEND gw_error TO gt_error.
+      CLEAR: gw_error.
+
+      gw_erred = gw_data.
+      APPEND gw_erred TO gt_erred.
+      CLEAR: gw_erred.
+    ENDLOOP.
+    IF NOT sy-subrc IS INITIAL.
+      CLEAR: lw_return1.
+      READ TABLE lt_return1 INTO lw_return1
+                            WITH KEY type = 'S'.
+      gw_succe-eleme = gw_data-clnum.
+      gw_succe-descr = 'Status'.
+      gw_succe-messg = text-s05.
+      APPEND gw_succe TO gt_succe.
+      CLEAR: gw_succe, lw_return1.
+
+      CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+      WAIT UP TO 1 SECONDS.
+
+    ENDIF.
+
+  ELSE.
+
+    gw_error-eleme = gw_data-clnum.
+    gw_error-descr = 'Status'.
+    CONCATENATE 'Status' gw_data-clsts text-e05
+           INTO gw_error-messg SEPARATED BY space.
+    APPEND gw_error TO gt_error.
+    CLEAR: gw_error.
+
+    gw_erred = gw_data.
+    APPEND gw_erred TO gt_erred.
+    CLEAR: gw_erred.
+
+    gv_error = gv_error + 1.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZCREATE_PROJ_WBS
+*&---------------------------------------------------------------------*
+*       Create New Project/WBS
+*----------------------------------------------------------------------*
+FORM zcreate_proj_wbs .
+
+  DATA: lw_proj         TYPE ty_proj,
+        lw_proj_defn    TYPE bapi_bus2001_new,
+        lt_wbs_element  TYPE TABLE OF bapi_bus2054_new,
+        lw_wbs_element  TYPE bapi_bus2054_new,
+        lw_wbs_element1 TYPE bapi_bus2054_new,
+        lw_wbs_element2 TYPE bapi_bus2054_new,
+        lw_wbs_element3 TYPE bapi_bus2054_new,
+        lt_return       TYPE TABLE OF bapiret2,
+        lw_return       TYPE bapiret2,
+        lt_extin        TYPE TABLE OF bapiparex,
+        lt_extout       TYPE TABLE OF bapiparex.
+
+*--Check if the status is existing.
+  CLEAR: gw_ajilon, gv_error.
+
+  TRANSLATE gw_data-clsts TO UPPER CASE.
+
+  READ TABLE gt_ajilon INTO gw_ajilon
+             WITH KEY zajsts = gw_data-clsts.
+  IF sy-subrc IS INITIAL.
+
+*--Create new project
+    CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+*--Responsible Person
+    CLEAR: gw_emailid.
+    READ TABLE gt_emailid INTO gw_emailid
+                         WITH KEY usrid = gw_data-cloff.
+
+*--Update workarea
+    lw_proj_defn-project_definition = gw_data-clnum.
+    lw_proj_defn-description        = gw_data-cldes.
+    lw_proj_defn-wbs_status_profile = lc_status.
+    IF NOT gw_emailid-pernr IS INITIAL.
+      lw_proj_defn-responsible_no     = gw_emailid-pernr.
+    ELSE.
+      lw_proj_defn-responsible_no     = '00000001'.
+    ENDIF.
+    lw_proj_defn-company_code       = lc_5100.
+    lw_proj_defn-controlling_area   = lc_5000.
+    lw_proj_defn-project_currency   = lc_aud.
+    lw_proj_defn-calendar           = lc_dl.
+    lw_proj_defn-plan_basic         = lc_3.
+    lw_proj_defn-plan_fcst          = lc_3.
+    lw_proj_defn-time_unit          = lc_tag.
+    lw_proj_defn-project_profile    = lc_proj.
+    lw_proj_defn-budget_profile     = lc_budj.
+    lw_proj_defn-objectclass        = lc_iv.
+    lw_proj_defn-statistical        = lc_x.
+    lw_proj_defn-wbs_sched_profile  = lc_wprof.
+    lw_proj_defn-plan_profile       = lc_pprof.
+
+*--Create new project definition
+    CALL FUNCTION 'BAPI_BUS2001_CREATE'
+      EXPORTING
+        i_project_definition       = lw_proj_defn
+      TABLES
+        et_return                  = lt_return
+        extensionin                = lt_extin
+        extensionout               = lt_extout.
+    CLEAR: lw_return.
+    LOOP AT lt_return INTO lw_return
+                     WHERE type = 'E'
+                        OR type = 'A'.
+      gw_error-eleme = lw_return-message_v2.
+      gw_error-descr = lw_return-message_v1.
+      gw_error-messg = lw_return-message.
+      APPEND gw_error TO gt_error.
+      CLEAR: gw_error.
+
+    ENDLOOP.
+    IF NOT sy-subrc IS INITIAL.
+*--Create new WBS definition
+*--Fill in table
+      REFRESH: lt_return, lt_extin, lt_extout.
+
+      CLEAR: lw_wbs_element, lw_wbs_element1,
+             lw_wbs_element2, lw_wbs_element3.
+
+*--WBS Element
+      lw_wbs_element-wbs_element = gw_data-clnum.
+      CONCATENATE gw_data-clnum '-01' INTO lw_wbs_element1-wbs_element.
+      CONCATENATE gw_data-clnum '-02' INTO lw_wbs_element2-wbs_element.
+      IF gw_data-cltyp = 'Normal'.
+       CONCATENATE gw_data-clnum '-03' INTO lw_wbs_element3-wbs_element.
+      ENDIF.
+
+*--Description
+      lw_wbs_element-description = gw_data-clnum.
+      CONCATENATE gw_data-clnum '- Assess'
+      INTO lw_wbs_element1-description SEPARATED BY space.
+      IF gw_data-cltyp NE 'Normal'.
+        CONCATENATE gw_data-clnum '- Fix'
+        INTO lw_wbs_element2-description SEPARATED BY space.
+      ELSE.
+        CONCATENATE gw_data-clnum '- Settle/Fix'
+        INTO lw_wbs_element2-description SEPARATED BY space.
+        CONCATENATE gw_data-clnum '- Buy'
+        INTO lw_wbs_element3-description SEPARATED BY space.
+      ENDIF.
+
+*--Responsible Number
+*--Responsible Person
+      IF NOT gw_emailid-pernr IS INITIAL.
+        lw_wbs_element-responsible_no  = gw_emailid-pernr.
+        lw_wbs_element1-responsible_no = gw_emailid-pernr.
+        lw_wbs_element2-responsible_no = gw_emailid-pernr.
+        IF gw_data-cltyp = 'Normal'.
+          lw_wbs_element3-responsible_no = gw_emailid-pernr.
+        ENDIF.
+        CLEAR: gw_emailid.
+      ENDIF.
+
+*--Company Code
+      lw_wbs_element-company_code  = lc_5100.
+      lw_wbs_element1-company_code = lc_5100.
+      lw_wbs_element2-company_code = lc_5100.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-company_code = lc_5100.
+      ENDIF.
+
+*--Controlling Area
+      lw_wbs_element-controlling_area   = lc_5000.
+      lw_wbs_element1-controlling_area  = lc_5000.
+      lw_wbs_element2-controlling_area  = lc_5000.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-controlling_area  = lc_5000.
+      ENDIF.
+
+*--Project Type
+      lw_wbs_element-proj_type    = lc_d4.
+      lw_wbs_element1-proj_type   = lc_d5.
+      lw_wbs_element2-proj_type   = lc_d6.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-proj_type   = lc_d7.
+      ENDIF.
+
+*--WBS Planning Element
+      lw_wbs_element-wbs_planning_element    = lc_x.
+      lw_wbs_element1-wbs_planning_element   = lc_x.
+      lw_wbs_element2-wbs_planning_element   = lc_x.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-wbs_planning_element   = lc_x.
+      ENDIF.
+
+*--WBS Account Assignment Element
+      lw_wbs_element-wbs_account_assignment_element  = ' '.
+      lw_wbs_element1-wbs_account_assignment_element = lc_x.
+      lw_wbs_element2-wbs_account_assignment_element = lc_x.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-wbs_account_assignment_element = lc_x.
+      ENDIF.
+
+*--WBS Billing Element
+      lw_wbs_element-wbs_billing_element  = ' '.
+      lw_wbs_element1-wbs_billing_element = ' '.
+      lw_wbs_element2-wbs_billing_element = lc_x.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-wbs_billing_element = lc_x.
+      ENDIF.
+
+*--Calendar
+      lw_wbs_element-calendar  = lc_dl.
+      lw_wbs_element1-calendar = lc_dl.
+      lw_wbs_element2-calendar = lc_dl.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-calendar = lc_dl.
+      ENDIF.
+
+*--Currency
+      lw_wbs_element-currency  = lc_aud.
+      lw_wbs_element1-currency = lc_aud.
+      lw_wbs_element2-currency = lc_aud.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-currency = lc_aud.
+      ENDIF.
+
+*--Key word ID for user-defined fields
+      lw_wbs_element-user_field_key  = lc_ufk.
+      lw_wbs_element1-user_field_key = lc_ufk.
+      lw_wbs_element2-user_field_key = lc_ufk.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_key = lc_ufk.
+      ENDIF.
+
+*--Claim Category
+      lw_wbs_element-user_field_char20_1  = gw_data-cltyp.
+      lw_wbs_element1-user_field_char20_1 = gw_data-cltyp.
+      lw_wbs_element2-user_field_char20_1 = gw_data-cltyp.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_char20_1 = gw_data-cltyp.
+      ENDIF.
+
+*--North/South
+      lw_wbs_element-user_field_char20_2  = gw_data-clnos.
+      lw_wbs_element1-user_field_char20_2 = gw_data-clnos.
+      lw_wbs_element2-user_field_char20_2 = gw_data-clnos.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_char20_2 = gw_data-clnos.
+      ENDIF.
+
+*--Region
+      lw_wbs_element-user_field_char10_1  = gw_data-regio.
+      lw_wbs_element1-user_field_char10_1 = gw_data-regio.
+      lw_wbs_element2-user_field_char10_1 = gw_data-regio.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_char10_1 = gw_data-regio.
+      ENDIF.
+
+*--Settlement Method
+      lw_wbs_element-user_field_char10_2  = gw_data-settl.
+      lw_wbs_element1-user_field_char10_2 = gw_data-settl.
+      lw_wbs_element2-user_field_char10_2 = gw_data-settl.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_char10_2 = gw_data-settl.
+      ENDIF.
+
+*--Days: Submit to Accept
+      lw_wbs_element-user_field_quan1  = gw_data-dstoa.
+      lw_wbs_element1-user_field_quan1 = gw_data-dstoa.
+      lw_wbs_element2-user_field_quan1 = gw_data-dstoa.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_quan1 = gw_data-dstoa.
+      ENDIF.
+
+*--Days: Submit to Accept - Unit
+      lw_wbs_element-user_field_unit1_iso  = lc_days.
+      lw_wbs_element1-user_field_unit1_iso = lc_days.
+      lw_wbs_element2-user_field_unit1_iso = lc_days.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_unit1_iso = lc_days.
+      ENDIF.
+
+*--Days: Accept to Complete
+      lw_wbs_element-user_field_quan2  = gw_data-datoc.
+      lw_wbs_element1-user_field_quan2 = gw_data-datoc.
+      lw_wbs_element2-user_field_quan2 = gw_data-datoc.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_quan2 = gw_data-datoc.
+      ENDIF.
+
+*--Days: Submit to Accept - Unit
+      lw_wbs_element-user_field_unit2_iso  = lc_days.
+      lw_wbs_element1-user_field_unit2_iso = lc_days.
+      lw_wbs_element2-user_field_unit2_iso = lc_days.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_unit2_iso = lc_days.
+      ENDIF.
+
+*--Approval Amount
+      lw_wbs_element-user_field_curr1  = gw_data-apamt.
+      lw_wbs_element1-user_field_curr1 = gw_data-apamt.
+      lw_wbs_element2-user_field_curr1 = gw_data-apamt.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_curr1 = gw_data-apamt.
+      ENDIF.
+
+*--Currency Key1
+      lw_wbs_element-user_field_cuky1_iso  = gw_data-curr1.
+      lw_wbs_element1-user_field_cuky1_iso = gw_data-curr1.
+      lw_wbs_element2-user_field_cuky1_iso = gw_data-curr1.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_cuky1_iso = gw_data-curr1.
+      ENDIF.
+
+*--Collier Amount
+      lw_wbs_element-user_field_curr2  = gw_data-coamt.
+      lw_wbs_element1-user_field_curr2 = gw_data-coamt.
+      lw_wbs_element2-user_field_curr2 = gw_data-coamt.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_curr2 = gw_data-coamt.
+      ENDIF.
+
+*--Currency Key2
+      lw_wbs_element-user_field_cuky2_iso  = gw_data-curr2.
+      lw_wbs_element1-user_field_cuky2_iso = gw_data-curr2.
+      lw_wbs_element2-user_field_cuky2_iso = gw_data-curr2.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_cuky2_iso = gw_data-curr2.
+      ENDIF.
+
+*--Claim Received Date
+      IF NOT gw_data-clrdt IS INITIAL.
+        lw_wbs_element-user_field_date1  = gw_data-clrdt.
+        lw_wbs_element1-user_field_date1 = gw_data-clrdt.
+        lw_wbs_element2-user_field_date1 = gw_data-clrdt.
+        IF gw_data-cltyp = 'Normal'.
+          lw_wbs_element3-user_field_date1 = gw_data-clrdt.
+        ENDIF.
+      ENDIF.
+
+*--Claim Acceptance Date
+      IF NOT gw_data-cladt IS INITIAL.
+        lw_wbs_element-user_field_date2  = gw_data-cladt.
+        lw_wbs_element1-user_field_date2 = gw_data-cladt.
+        lw_wbs_element2-user_field_date2 = gw_data-cladt.
+        IF gw_data-cltyp = 'Normal'.
+          lw_wbs_element3-user_field_date2 = gw_data-cladt.
+        ENDIF.
+      ENDIF.
+
+*--Active Mine?
+      lw_wbs_element-user_field_flag1  = gw_data-amine.
+      lw_wbs_element1-user_field_flag1 = gw_data-amine.
+      lw_wbs_element2-user_field_flag1 = gw_data-amine.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_flag1 = gw_data-amine.
+      ENDIF.
+
+*--Pay and Reclaim flag
+      lw_wbs_element-user_field_flag2  = gw_data-copay.
+      lw_wbs_element1-user_field_flag2 = gw_data-copay.
+      lw_wbs_element2-user_field_flag2 = gw_data-copay.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-user_field_flag2 = gw_data-copay.
+      ENDIF.
+
+*--WBS Summarization
+      lw_wbs_element-wbs_summarization  = lc_x.
+      lw_wbs_element1-wbs_summarization = lc_x.
+      lw_wbs_element2-wbs_summarization = lc_x.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-wbs_summarization = lc_x.
+      ENDIF.
+
+*--Object Class
+      lw_wbs_element-objectclass  = lc_ocost.
+      lw_wbs_element1-objectclass = lc_ocost.
+      lw_wbs_element2-objectclass = lc_ocost.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-objectclass = lc_ocost.
+      ENDIF.
+
+*--Statistical
+      lw_wbs_element-statistical  = lc_x.
+      lw_wbs_element1-statistical = lc_x.
+      lw_wbs_element2-statistical = lc_x.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-statistical = lc_x.
+      ENDIF.
+
+*--Investment Measure Profile
+      lw_wbs_element-invest_profile  = lc_budj.
+      lw_wbs_element1-invest_profile = lc_budj.
+      lw_wbs_element2-invest_profile = lc_budj.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-invest_profile = lc_budj.
+      ENDIF.
+
+*--Investment Measure Profile
+      lw_wbs_element-invest_profile  = lc_budj.
+      lw_wbs_element1-invest_profile = lc_budj.
+      lw_wbs_element2-invest_profile = lc_budj.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-invest_profile = lc_budj.
+      ENDIF.
+
+*--WBS Element - Left
+      lw_wbs_element-wbs_left  = lc_space.
+      lw_wbs_element1-wbs_left = lc_space.
+      CONCATENATE gw_data-clnum '-01'
+             INTO lw_wbs_element2-wbs_left.
+      IF gw_data-cltyp = 'Normal'.
+        CONCATENATE gw_data-clnum '-02'
+               INTO lw_wbs_element3-wbs_left.
+      ENDIF.
+
+*--WBS Element - UP
+      lw_wbs_element-wbs_up  = lc_space.
+      lw_wbs_element1-wbs_up = gw_data-clnum.
+      lw_wbs_element2-wbs_up = gw_data-clnum.
+      IF gw_data-cltyp = 'Normal'.
+        lw_wbs_element3-wbs_up = gw_data-clnum.
+      ENDIF.
+
+      APPEND lw_wbs_element  TO lt_wbs_element.
+      APPEND lw_wbs_element1 TO lt_wbs_element.
+      APPEND lw_wbs_element2 TO lt_wbs_element.
+      IF gw_data-cltyp = 'Normal'.
+        APPEND lw_wbs_element3 TO lt_wbs_element.
+      ENDIF.
+
+      CLEAR: lw_wbs_element, lw_wbs_element1,
+             lw_wbs_element2, lw_wbs_element3.
+
+*--Create the WBS elements
+      CALL FUNCTION 'BAPI_BUS2054_CREATE_MULTI'
+        EXPORTING
+         i_project_definition       = lw_proj_defn-project_definition
+        TABLES
+         it_wbs_element             = lt_wbs_element
+         et_return                  = lt_return
+         extensionin                = lt_extin
+         extensionout               = lt_extout.
+      CLEAR: lw_return.
+      LOOP AT lt_return INTO lw_return
+                      WHERE type = 'E'
+                         OR type = 'A'.
+        gw_error-eleme = lw_return-message_v2.
+        gw_error-descr = lw_return-message_v1.
+        gw_error-messg = lw_return-message.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error, lw_return.
+      ENDLOOP.
+      IF NOT sy-subrc IS INITIAL.
+
+        REFRESH: lt_return.
+        CALL FUNCTION 'BAPI_PS_PRECOMMIT'
+         TABLES
+           et_return       = lt_return.
+        CLEAR: lw_return.
+        LOOP AT lt_return INTO lw_return
+                        WHERE type = 'E'
+                           OR type = 'A'.
+          gw_error-eleme = lw_return-message_v2.
+          gw_error-descr = lw_return-message_v1.
+          gw_error-messg = lw_return-message.
+          APPEND gw_error TO gt_error.
+          CLEAR: gw_error, lw_return.
+        ENDLOOP.
+        IF NOT sy-subrc IS INITIAL.
+          CLEAR: gw_succe.
+          gw_succe-eleme = gw_data-clnum.
+          gw_succe-descr = 'Claim'.
+          gw_succe-messg = text-s03.
+          APPEND gw_succe TO gt_succe.
+          CLEAR: gw_succe.
+
+          CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+          WAIT UP TO 1 SECONDS.
+        ELSE.
+          gw_erred = gw_data.
+          APPEND gw_erred TO gt_erred.
+          CLEAR: gw_erred.
+
+          gv_error = gv_error + 1.
+        ENDIF.
+
+      ENDIF.
+    ELSE.
+
+      gw_erred = gw_data.
+      APPEND gw_erred TO gt_erred.
+      CLEAR: gw_erred.
+
+      gv_error = gv_error + 1.
+
+    ENDIF.
+
+    IF gv_error EQ 0.
+*--Assign Status
+      PERFORM zchange_status_proj_wbs.
+
+*--Assign Budget
+      PERFORM zchange_budget_proj_wbs.
+
+      CLEAR: gv_error.
+    ENDIF.
+
+  ELSE.
+
+    gw_error-eleme = gw_data-clnum.
+    gw_error-descr = 'Status'.
+    CONCATENATE 'Status' gw_data-clsts text-e05
+           INTO gw_error-messg SEPARATED BY space.
+    APPEND gw_error TO gt_error.
+    CLEAR: gw_error.
+
+    gw_erred = gw_data.
+    APPEND gw_erred TO gt_erred.
+    CLEAR: gw_erred.
+
+    gv_error = gv_error + 1.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZCHANGE_BUDGET_PROJ_WBS
+*&---------------------------------------------------------------------*
+*       Change Budget
+*----------------------------------------------------------------------*
+FORM zchange_budget_proj_wbs .
+
+  DATA: lt_bdcdata TYPE TABLE OF bdcdata,
+        lw_bdcdata TYPE bdcdata,
+        lt_messtab TYPE TABLE OF bdcmsgcoll,
+        lw_messtab TYPE bdcmsgcoll,
+*        lw_rpsc    TYPE ty_rpsc,
+        lv_lvlm    TYPE i,
+        lv_lvl1    TYPE i,
+        lv_lvl2    TYPE i,
+        lv_lvl3    TYPE i,
+        lv_mlvl    TYPE char13,
+        lv_1lvl    TYPE char13,
+        lv_2lvl    TYPE char13,
+        lv_3lvl    TYPE char13,
+        lv_mstxt   TYPE msgtext,
+        lw_bdcopt  TYPE ctu_params,
+        lv_kokrs   TYPE kokrs,
+        lt_systs   TYPE TABLE OF bapi_system_status,
+        lt_ussts   TYPE TABLE OF bapi_user_status,
+        lw_systs   TYPE bapi_system_status,
+        lw_ussts   TYPE bapi_user_status,
+        lv_systs   TYPE bapi_system_status_text,
+        lv_ussts   TYPE bapi_user_status_text,
+        lv_setbdg  TYPE flag,
+        lv_projdefn TYPE bapipr-project_definition,
+        lw_return   TYPE bapireturn1.
+
+  REFRESH: gt_bdcdata, lt_systs, lt_ussts.
+  CLEAR: lv_mlvl, lv_1lvl, lv_2lvl, lv_3lvl,
+         lv_lvlm, lv_lvl1, lv_lvl2, lv_lvl3,
+         lv_setbdg.
+
+  CHECK gv_error EQ 0.
+
+  IF gw_ajilon-zprpu EQ 'ACCP' OR
+     gw_ajilon-zprpu EQ 'PAYF' OR
+     gw_ajilon-zprpu EQ 'SUBM' OR
+     gw_ajilon-zprpu EQ 'ASSE' OR
+     gw_ajilon-zprpu EQ 'OFFR'.
+
+    IF gw_ajilon-zprpu EQ 'SUBM' OR
+       gw_ajilon-zprpu EQ 'ASSE' OR
+       gw_ajilon-zprpu EQ 'OFFR'.
+
+      lv_projdefn = gw_data-clnum.
+
+      CALL FUNCTION 'BAPI_PS_INITIALIZATION'.
+
+      CALL FUNCTION 'BAPI_BUS2001_GET_STATUS'
+        EXPORTING
+          project_definition       = lv_projdefn
+        IMPORTING
+          return                   = lw_return
+        TABLES
+          e_system_status          = lt_systs
+          e_user_status            = lt_ussts.
+      IF lw_return IS INITIAL.
+        CLEAR: lw_systs, lw_ussts.
+        READ TABLE lt_systs INTO lw_systs INDEX 1.
+        lv_systs = lw_systs-system_status.
+        READ TABLE lt_ussts INTO lw_ussts INDEX 1.
+        lv_ussts = lw_ussts-user_status.
+      ENDIF.
+      IF lv_systs EQ 'REL'.
+        lv_setbdg = lc_x.
+      ENDIF.
+    ELSE.
+      lv_setbdg = lc_x.
+    ENDIF.
+
+    CHECK lv_setbdg = lc_x.
+
+*    CLEAR: lw_rpsc.
+    IF gw_data-amine IS INITIAL.
+*    LOOP AT gt_rpsc INTO lw_rpsc
+*      WHERE posid CP gw_data-clnum.
+*      IF lw_rpsc-posid = gw_data-clnum. "D4
+*        lv_lvlm = ceil( gw_data-apamt ).
+*        WRITE lv_lvlm TO lv_mlvl LEFT-JUSTIFIED.
+*      ELSEIF lw_rpsc-posid CP '-01'. "D5
+*        lv_lvl1 = ceil( lw_rpsc-total ).
+*        WRITE lv_lvl1 TO lv_1lvl LEFT-JUSTIFIED.
+*      ELSEIF lw_rpsc-posid CP '-02'. "D6
+*        IF gw_data-settl CP 'Settle' OR
+*           gw_data-settl CP 'Fix'.
+*          lv_lvl2 = gw_data-apamt - lv_lvl1.
+*          WRITE lv_lvl2 TO lv_2lvl LEFT-JUSTIFIED.
+*        ENDIF.
+*      ELSEIF lw_rpsc-posid CP '-03'. "D7
+*        IF gw_data-settl CP 'Buy'.
+*          lv_lvl3 = gw_data-apamt - lv_lvl1 - lv_lvl2.
+*          WRITE lv_lvl3 TO lv_3lvl LEFT-JUSTIFIED.
+*        ENDIF.
+*      ENDIF.
+*      CLEAR: lw_rpsc.
+*    ENDLOOP.
+*    IF NOT sy-subrc IS INITIAL.
+*      lv_lvlm = ceil( gw_data-apamt ). "D4
+*      WRITE lv_lvlm TO lv_mlvl LEFT-JUSTIFIED.
+*      IF gw_data-settl CP 'Settle' OR "D6
+*         gw_data-settl CP 'Fix'.
+*        lv_lvl2 = gw_data-apamt - lv_lvl1.
+*        WRITE lv_lvl2 TO lv_2lvl LEFT-JUSTIFIED.
+*      ENDIF.
+*      IF gw_data-settl CP 'Buy'. "D7
+*        lv_lvl3 = gw_data-apamt - lv_lvl1 - lv_lvl2.
+*        WRITE lv_lvl3 TO lv_3lvl LEFT-JUSTIFIED.
+*      ENDIF.
+*    ENDIF.
+      lv_lvlm = ceil( gw_data-apamt ). "D4
+      WRITE lv_lvlm TO lv_mlvl LEFT-JUSTIFIED.
+      lv_lvl1 = gw_data-apamt - gw_data-coamt. "D5
+      WRITE lv_lvl1 TO lv_1lvl LEFT-JUSTIFIED.
+      IF gw_data-settl CP 'Settle' OR "D6
+         gw_data-settl CP 'Fix'.
+        lv_lvl2 = gw_data-coamt.
+        WRITE lv_lvl2 TO lv_2lvl LEFT-JUSTIFIED.
+      ENDIF.
+      IF gw_data-settl CP 'Buy'. "D7
+        lv_lvl3 = gw_data-coamt.
+        WRITE lv_lvl3 TO lv_3lvl LEFT-JUSTIFIED.
+      ENDIF.
+    ELSE.
+      IF gw_data-copay IS INITIAL.
+        lv_lvlm = gw_data-apamt - gw_data-coamt. "D4
+        WRITE lv_lvlm TO lv_mlvl LEFT-JUSTIFIED.
+        lv_lvl1 = gw_data-apamt - gw_data-coamt. "D5
+        WRITE lv_lvl1 TO lv_1lvl LEFT-JUSTIFIED.
+        CLEAR: lv_lvl2, lv_lvl3, lv_2lvl, lv_3lvl.
+      ELSE.
+        lv_lvlm = ceil( gw_data-apamt ). "D4
+        WRITE lv_lvlm TO lv_mlvl LEFT-JUSTIFIED.
+        lv_lvl1 = gw_data-apamt - gw_data-coamt. "D5
+        WRITE lv_lvl1 TO lv_1lvl LEFT-JUSTIFIED.
+        IF gw_data-settl CP 'Settle' OR "D6
+           gw_data-settl CP 'Fix'.
+          lv_lvl2 = gw_data-coamt.
+          WRITE lv_lvl2 TO lv_2lvl LEFT-JUSTIFIED.
+        ENDIF.
+        IF gw_data-settl CP 'Buy'. "D7
+          lv_lvl3 = gw_data-coamt.
+          WRITE lv_lvl3 TO lv_3lvl LEFT-JUSTIFIED.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+    IF ( gw_ajilon-zprpu EQ 'SUBM' OR
+         gw_ajilon-zprpu EQ 'ASSE' OR
+         gw_ajilon-zprpu EQ 'OFFR' ) AND
+       lv_systs EQ 'REL'.
+
+      CLEAR: lv_2lvl, lv_3lvl.
+
+    ENDIF.
+
+    PERFORM bdc_dynpro      USING 'SAPMKBUD' '0200'.
+    PERFORM bdc_field       USING 'BDC_CURSOR' 'PROJ-PSPID'.
+    PERFORM bdc_field       USING 'BDC_OKCODE' '/00'.
+    PERFORM bdc_field       USING 'PROJ-PSPID' gw_data-clnum.
+
+    PERFORM bdc_dynpro      USING 'SAPLKBPP' '0320'.
+    IF gw_data-cltyp EQ 'Normal'.
+      PERFORM bdc_field       USING 'BDC_CURSOR' 'BPDY-WERT1(04)'.
+    ELSE.
+      PERFORM bdc_field       USING 'BDC_CURSOR' 'BPDY-WERT1(03)'.
+    ENDIF.
+    PERFORM bdc_field       USING 'BDC_OKCODE' '/00'.
+    PERFORM bdc_field       USING 'BPDY-WERT1(01)' lv_mlvl.
+    PERFORM bdc_field       USING 'BPDY-WERT1(02)' lv_1lvl.
+    PERFORM bdc_field       USING 'BPDY-WERT1(03)' lv_2lvl.
+    IF gw_data-cltyp EQ 'Normal'.
+      PERFORM bdc_field       USING 'BPDY-WERT1(04)' lv_3lvl.
+    ENDIF.
+
+    PERFORM bdc_dynpro      USING 'SAPLKBPP' '0320'.
+    IF gw_data-cltyp EQ 'Normal'.
+      PERFORM bdc_field       USING 'BDC_CURSOR' 'BPDY-WERT1(04)'.
+    ELSE.
+      PERFORM bdc_field       USING 'BDC_CURSOR' 'BPDY-WERT1(03)'.
+    ENDIF.
+    PERFORM bdc_field       USING 'BDC_OKCODE' '=POST'.
+
+
+    SET PARAMETER ID 'CAC' FIELD '5000'.
+
+    CALL TRANSACTION 'CJ30' USING gt_bdcdata
+                             MODE 'N'
+                    MESSAGES INTO lt_messtab.
+
+    CLEAR: lw_messtab, gw_error.
+    LOOP AT lt_messtab INTO lw_messtab
+                      WHERE msgtyp = 'E'
+                         OR msgtyp = 'A'.
+      CALL FUNCTION 'MASS_MESSAGE_GET' "To get the Message Text
+           EXPORTING
+                arbgb             = lw_messtab-msgid
+                msgnr             = lw_messtab-msgnr
+                msgv1             = lw_messtab-msgv1
+                msgv2             = lw_messtab-msgv2
+                msgv3             = lw_messtab-msgv3
+                msgv4             = lw_messtab-msgv4
+           IMPORTING
+                msgtext           = lv_mstxt
+           EXCEPTIONS
+                message_not_found = 1
+                OTHERS            = 2.
+      IF sy-subrc IS INITIAL.
+        gw_error-eleme = gw_data-clnum.
+        gw_error-descr = lw_messtab-msgv1.
+        gw_error-messg = lv_mstxt.
+        APPEND gw_error TO gt_error.
+        CLEAR: gw_error, lv_mstxt.
+      ENDIF.
+    ENDLOOP.
+    IF NOT sy-subrc IS INITIAL.
+      gw_succe-eleme = gw_data-clnum.
+      gw_succe-descr = 'Budget'.
+      gw_succe-messg = text-s01.
+      APPEND gw_succe TO gt_succe.
+      CLEAR: gw_succe, lv_mstxt.
+
+*--Run the tcode CJBN to activate the project and WBS.
+
+      SET PARAMETER ID 'CAC' FIELD '5000'.
+
+      SET PARAMETER ID 'PDB' FIELD '000000000001'.
+
+      SUBMIT rbpfcpn1 WITH cn_projn-low EQ gw_data-clnum
+                       AND RETURN EXPORTING LIST TO MEMORY.
+
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
+*----------------------------------------------------------------------*
+*        form for bdc dynpro
+*----------------------------------------------------------------------*
+FORM bdc_dynpro USING program
+                      dynpro.
+
+  DATA: lw_bdcdata TYPE bdcdata.
+
+  CLEAR lw_bdcdata.
+  lw_bdcdata-program = program.
+  lw_bdcdata-dynpro = dynpro.
+  lw_bdcdata-dynbegin = 'X'.
+  APPEND lw_bdcdata TO gt_bdcdata.
+
+ENDFORM.                    "bdc_dynpro
+*---------------------------------------------------
+*        form for bdc field
+*---------------------------------------------------
+FORM bdc_field  USING fnam
+                      fval.
+
+  DATA: lw_bdcdata TYPE bdcdata.
+
+  CLEAR lw_bdcdata.
+  lw_bdcdata-fnam = fnam.
+  lw_bdcdata-fval = fval.
+  APPEND lw_bdcdata TO gt_bdcdata.
+
+ENDFORM.                    "bdc_field
+*&---------------------------------------------------------------------*
+*&      Form  ZCREATE_STATUS_PROJ_WBS
+*&---------------------------------------------------------------------*
+*       Create the status in case of new claims
+*----------------------------------------------------------------------*
+FORM zcreate_status_proj_wbs .
+
+  DATA: lv_prdef  TYPE bapipr-project_definition,
+        lt_return TYPE TABLE OF bapireturn1,
+        lt_result TYPE TABLE OF bapi_status_result,
+        lv_wbs    TYPE string,
+        lw_wbs_system TYPE bapi_wbs_mnt_system_status,
+        lt_wbs_system TYPE TABLE OF bapi_wbs_mnt_system_status.
+
+  lv_prdef = gw_data-clnum.
+
+*--Set project header System and User Status
+  CALL FUNCTION 'BAPI_BUS2001_SET_STATUS'
+    EXPORTING
+      project_definition       = lv_prdef
+     set_user_status          = 'SUBM'
+   IMPORTING
+     return                   = lt_return
+   TABLES
+     e_result                 = lt_result
+            .
+
+*--Set WBS Element System Status.
+  REFRESH: lt_return, lt_result.
+  CLEAR: lw_wbs_system, lv_wbs.
+  IF gw_data-cltyp = 'Normal'.
+    lw_wbs_system-wbs_element = gw_data-clnum.
+    lw_wbs_system-set_system_status = 'CRTD'.
+    APPEND lw_wbs_system TO lt_wbs_system.
+
+    CLEAR: lw_wbs_system, lv_wbs.
+    CONCATENATE gw_data-clnum '-01' INTO lv_wbs.
+    lw_wbs_system-wbs_element = lv_wbs.
+    lw_wbs_system-set_system_status = 'CRTD'.
+    APPEND lw_wbs_system TO lt_wbs_system.
+
+    CLEAR: lw_wbs_system, lv_wbs.
+    CONCATENATE gw_data-clnum '-02' INTO lv_wbs.
+    lw_wbs_system-wbs_element = lv_wbs.
+    lw_wbs_system-set_system_status = 'CRTD'.
+    APPEND lw_wbs_system TO lt_wbs_system.
+
+    CLEAR: lw_wbs_system, lv_wbs.
+    CONCATENATE gw_data-clnum '-03' INTO lv_wbs.
+    lw_wbs_system-wbs_element = lv_wbs.
+    lw_wbs_system-set_system_status = 'CRTD'.
+    APPEND lw_wbs_system TO lt_wbs_system.
+
+  ENDIF.
+
+  CALL FUNCTION 'BAPI_BUS2054_SET_STATUS'
+    IMPORTING
+       return                    = lt_return
+    TABLES
+       i_wbs_system_status       = lt_wbs_system
+       e_result                  = lt_result
+            .
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZARCHIVE_FILE
+*&---------------------------------------------------------------------*
+*       Archive current processed file
+*----------------------------------------------------------------------*
+FORM zarchive_file.
+
+  DATA : lw_temp         TYPE sychar512,
+         lv_source_file  TYPE rlgrap-filename,
+         lv_target_file  TYPE rlgrap-filename,
+         lw_files        TYPE ty_files,
+         lv_filename     TYPE localfile,
+         lv_afile        TYPE localfile.
+
+  CLEAR: lv_target_file, lv_source_file.
+
+  CHECK NOT gt_files IS INITIAL.
+
+  CLEAR: lw_files, lv_filename, lv_afile.
+  LOOP AT gt_files INTO lw_files.
+
+   lv_filename = lw_files-file.
+   gv_filename = lw_files-file.
+   CONCATENATE p_afile lv_filename INTO lv_afile.
+
+
+  lv_target_file = lv_source_file = lv_afile.
+  REPLACE 'inbound' WITH 'inbound/archive' INTO lv_target_file.
+  CONDENSE lv_target_file NO-GAPS.
+
+  OPEN DATASET lv_source_file FOR INPUT IN TEXT MODE ENCODING DEFAULT.
+  IF sy-subrc IS INITIAL.
+    OPEN DATASET lv_target_file FOR OUTPUT IN TEXT MODE
+                                ENCODING DEFAULT.
+    IF sy-subrc IS INITIAL.
+      DO.
+        READ DATASET lv_source_file INTO lw_temp.
+        IF sy-subrc EQ 0.
+          TRANSFER lw_temp TO lv_target_file.
+        ELSE.
+          EXIT.
+        ENDIF.
+      ENDDO.
+
+      CLOSE DATASET lv_source_file.
+      CLOSE DATASET lv_target_file.
+
+*delete the inbound file as it is archived
+      DELETE DATASET lv_source_file.
+      IF sy-subrc IS INITIAL.
+        WRITE : / | File | && lv_source_file &&   |  is archived  |.
+      ENDIF.
+
+    ELSE.
+      WRITE 'Error in opening file' && lv_target_file .
+    ENDIF.
+
+  ELSE.
+    WRITE 'Error in opening file' && lv_source_file.
+  ENDIF.
+
+  CLEAR : lv_source_file, lv_target_file,
+          lw_files, lv_filename, lv_afile.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&   Form  ZWRITE_ERROR_FILE
+*&---------------------------------------------------------------------*
+*    Write Errored File back to the application server for reprocessing
+*----------------------------------------------------------------------*
+FORM zwrite_error_file .
+
+  DATA: lv_erred_file TYPE rlgrap-filename,
+        lv_string     TYPE string,
+        lv_dstoa      TYPE char13,
+        lv_datoc      TYPE char13,
+        lv_apamt      TYPE char13,
+        lv_coamt      TYPE char13.
+
+  CHECK NOT gt_erred IS INITIAL AND
+        NOT p_afile  IS INITIAL.
+
+  lv_erred_file = p_afile.
+  REPLACE 'inbound' WITH 'inbound/error' INTO lv_erred_file.
+  CONCATENATE lv_erred_file gv_filename INTO lv_erred_file.
+  CONDENSE lv_erred_file NO-GAPS.
+
+  OPEN DATASET lv_erred_file FOR OUTPUT IN TEXT MODE ENCODING DEFAULT.
+  IF sy-subrc IS INITIAL.
+*** Header Line
+    CONCATENATE text-t02
+                text-t03
+                text-t04
+                text-t05
+                text-t06
+                text-t07
+                text-t08
+                text-t09
+                text-t10
+                text-t11
+                text-t12
+                text-t13
+                text-t14
+                text-t13
+                text-t15
+                text-t16
+                text-t17
+           INTO lv_string
+      SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+    TRANSFER lv_string TO lv_erred_file.
+
+    CLEAR: gw_erred.
+    LOOP AT gt_erred INTO gw_erred.
+      lv_dstoa = gw_erred-dstoa.
+      lv_datoc = gw_erred-datoc.
+      lv_apamt = gw_erred-apamt.
+      lv_coamt = gw_erred-coamt.
+
+      CONCATENATE gw_erred-cltyp
+                  gw_erred-clnum
+                  gw_erred-cldes
+                  gw_erred-clsts
+                  gw_erred-cloff
+                  gw_erred-clnos
+                  gw_erred-regio
+                  gw_erred-settl
+                  lv_dstoa
+                  lv_datoc
+                  lv_apamt
+                  gw_erred-curr1
+                  lv_coamt
+                  gw_erred-curr2
+                  gw_erred-clrdt
+                  gw_erred-cladt
+                  gw_erred-amine
+                  gw_erred-copay
+            INTO lv_string
+       SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+      TRANSFER lv_string TO lv_erred_file.
+      CLEAR :lv_string, gw_erred, lv_dstoa,
+             lv_datoc, lv_apamt, lv_coamt.
+    ENDLOOP.
+    CLOSE DATASET lv_erred_file.
+    IF sy-subrc IS INITIAL.
+*--Information message that the erred file has been
+*--written to the application server
+      WRITE:/ text-e04.
+    ENDIF.
+  ELSE.
+*--File failed to write to the application server
+    WRITE:/ text-e08.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZDISPLAY_MESSAGES
+*&---------------------------------------------------------------------*
+*       Display Error/Success Report
+*----------------------------------------------------------------------*
+FORM zdisplay_messages.
+
+*--Appending to same table.
+  APPEND LINES OF gt_succe TO gt_error.
+
+*--Build field catalogue
+  PERFORM zbuild_field_catalog.
+
+*--Displays the output in a ALV GRID
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program     = sy-repid
+      it_fieldcat            = gt_fieldcat
+      i_default              = 'X'
+      i_save                 = 'X'
+    TABLES
+      t_outtab               = gt_error
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZBUILD_FIELD_CATALOG
+*&---------------------------------------------------------------------*
+*       Build Field Catalog
+*----------------------------------------------------------------------*
+FORM zbuild_field_catalog .
+
+  DATA: lw_fieldcat TYPE slis_fieldcat_alv.
+
+  CLEAR lw_fieldcat.
+  lw_fieldcat-tabname     = 'GT_ERROR'.
+  lw_fieldcat-fieldname   = 'ELEME'.
+  lw_fieldcat-seltext_l   = 'Element'.
+  lw_fieldcat-outputlen   = '20'.
+  APPEND lw_fieldcat TO gt_fieldcat.
+
+  CLEAR lw_fieldcat.
+  lw_fieldcat-tabname     = 'GT_ERROR'.
+  lw_fieldcat-fieldname   = 'DESCR'.
+  lw_fieldcat-seltext_l   = 'Description'.
+  lw_fieldcat-outputlen   = '20'.
+  APPEND lw_fieldcat TO gt_fieldcat.
+
+  CLEAR lw_fieldcat.
+  lw_fieldcat-tabname     = 'GT_ERROR'.
+  lw_fieldcat-fieldname   = 'MESSG'.
+  lw_fieldcat-seltext_l   = 'Error Message'.
+  lw_fieldcat-outputlen   = '220'.
+  APPEND lw_fieldcat TO gt_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZSEND_ERROR_MAIL
+*&---------------------------------------------------------------------*
+*       Send Errors in mails to Case Advisors
+*----------------------------------------------------------------------*
+FORM zsend_error_mail.
+
+  DATA: lt_receiver TYPE STANDARD TABLE OF ty_receiver,
+        lw_receiver TYPE somlreci1,
+        lt_objtxt   TYPE STANDARD TABLE OF ty_objtxt,
+        lw_objtxt    TYPE solisti1,
+        lv_index    TYPE sy-tabix,
+        lw_document TYPE sodocchgi1,
+        lv_tab_lines TYPE i,
+        lw_objbin   TYPE solisti1, " SAPoffice: Single List with Column.
+        lt_objbin   TYPE STANDARD TABLE OF solisti1,
+        lt_packlist TYPE TABLE OF sopcklsti1,
+        lw_packlist TYPE sopcklsti1,
+        lw_data     TYPE sodocchgi1,
+        lv_objbin   TYPE i,
+        lv_objtxt   TYPE i.
+
+  CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+  CHECK NOT gt_erred[] IS INITIAL.
+
+  CLEAR: gw_emailid.
+  REFRESH: lt_receiver.
+  LOOP AT gt_emailid INTO gw_emailid.
+    CLEAR:   lw_receiver.
+
+    TRANSLATE gw_emailid-usrid TO LOWER CASE.
+    lw_receiver-receiver = gw_emailid-usrid.
+    lw_receiver-rec_type = 'U'.
+    APPEND lw_receiver TO lt_receiver.
+    CLEAR: lw_receiver, gw_emailid.
+  ENDLOOP.
+
+*--Fill in the obtxt table
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '<html>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '<head>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line =
+               '<title>Erred Claims Report - Mine Subsidence</title>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line =
+                '<meta http-equiv="Content-Type" content="text/html;'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = 'charset=iso-8859-1">'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '</head>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '<body>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+*--Set font color and its type
+  lw_objtxt-line = '<FONT COLOR = "black" face="Calibri" size="3">'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  CONCATENATE '<p>Hi,' '</p>'
+         INTO lw_objtxt-line SEPARATED BY space.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  CONCATENATE '<p>You are receiving this mail as you have been'
+              'identified as a claim advisor.</p>'
+         INTO lw_objtxt-line SEPARATED BY space.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  CONCATENATE '<p>Attached are the list of claims in error.'
+              'Kindly verify/correct and process them.</p>'
+         INTO lw_objtxt-line SEPARATED BY space.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  CONCATENATE '<p>The records in error could be found at'
+              '/sap_commerce/interfaces/ajilon/inbound/error/.</p>'
+         INTO lw_objtxt-line SEPARATED BY space.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '</FONT>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '</body>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '</html>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+  lw_objtxt-line = '<p>&nbsp;</p>'.
+  APPEND lw_objtxt TO lt_objtxt.
+  CLEAR: lw_objtxt.
+
+*--Adding attachment
+  CLEAR: lw_objbin.
+  CONCATENATE 'Element'
+              'Description'
+              'Message'
+              INTO lw_objbin SEPARATED BY
+              cl_abap_char_utilities=>horizontal_tab.
+  APPEND lw_objbin TO lt_objbin.
+  CLEAR lw_objbin.
+
+*--Populate entries
+  CLEAR: gw_error.
+  LOOP AT gt_error INTO gw_error.
+    CONCATENATE gw_error-eleme
+                gw_error-descr
+                gw_error-messg
+           INTO lw_objbin
+      SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+    CONCATENATE cl_abap_char_utilities=>cr_lf lw_objbin
+           INTO lw_objbin.
+    APPEND lw_objbin TO lt_objbin.
+    CLEAR: lw_objbin.
+  ENDLOOP.
+
+*--Describe the body of the message
+  CLEAR lw_packlist.
+  REFRESH lt_packlist.
+  DESCRIBE TABLE lt_objtxt LINES lv_objtxt.
+  READ TABLE lt_objtxt INTO lw_objtxt INDEX lv_objtxt.
+
+  DESCRIBE TABLE lt_objbin LINES lv_objbin.
+  READ TABLE lt_objbin INTO lw_objbin INDEX lv_objbin.
+*--Fill in the data table
+  lw_data-obj_descr = 'Erred Claims Report - Mine Subsidence'.
+  lw_data-obj_langu = sy-langu.
+  lw_data-obj_name  = 'Erred Claims Report - Mine Subsidence'.
+  lw_data-sensitivty = 'F'.
+  lw_data-doc_size = ( lv_objbin - 1 ) * 255 + strlen( lw_objtxt ).
+
+*--Packing List for Mail body and Attachment
+  lw_packlist-transf_bin = space.
+  lw_packlist-head_start = 1.
+  lw_packlist-head_num   = 0.
+  lw_packlist-body_start = 1.
+  DESCRIBE TABLE lt_objtxt LINES lw_packlist-body_num.
+  lw_packlist-doc_type = 'HTM'.
+  APPEND lw_packlist TO lt_packlist.
+  CLEAR: lw_packlist.
+
+*write packing list for attachment
+  lw_packlist-transf_bin = 'X'.
+  lw_packlist-head_start = 1.
+  lw_packlist-head_num = 1.
+  lw_packlist-body_start = 1.
+  lw_packlist-body_num    = lv_objtxt.
+  lw_packlist-doc_type    = 'XLS'.
+  lw_packlist-obj_name    = 'Erred Claims.xls'.
+  lw_packlist-obj_descr   = 'Erred Claims.xls'.
+  lw_packlist-doc_size    = lw_packlist-body_num * 255.
+  APPEND lw_packlist TO lt_packlist.
+  CLEAR: lw_packlist.
+
+*--Send mail with attachment
+  CALL FUNCTION 'SO_NEW_DOCUMENT_ATT_SEND_API1'
+    EXPORTING
+     document_data                    = lw_data
+     put_in_outbox                    = ' '
+     commit_work                      = 'X'
+    TABLES
+     packing_list                     = lt_packlist
+     contents_bin                     = lt_objbin
+     contents_txt                     = lt_objtxt
+     receivers                        = lt_receiver
+   EXCEPTIONS
+     too_many_receivers               = 1
+     document_not_sent                = 2
+     document_type_not_exist          = 3
+     operation_no_authorization       = 4
+     parameter_error                  = 5
+     x_error                          = 6
+     enqueue_error                    = 7
+     OTHERS                           = 8
+            .
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+
+ENDFORM.
