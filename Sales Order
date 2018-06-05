@@ -1,0 +1,1791 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZSDN_SO_SPATIAL_SERV_FRM
+*&---------------------------------------------------------------------*
+*&---------------------------------------------------------------------*
+*&      Form  GET_FILE_NAME
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_P_FILE  text
+*----------------------------------------------------------------------*
+FORM get_file_name USING p_file.
+
+  CALL FUNCTION 'KD_GET_FILENAME_ON_F4'
+    EXPORTING
+*     PROGRAM_NAME  = SYST-REPID
+*     DYNPRO_NUMBER = SYST-DYNNR
+*     FIELD_NAME    = ' '
+*     STATIC        = ' '
+*     MASK          = ' '
+      fileoperation = 'W'
+*     PATH          =
+    CHANGING
+      file_name     = p_file
+*     LOCATION_FLAG = 'P'
+    EXCEPTIONS
+      mask_too_long = 1
+      OTHERS        = 2.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILE_UPLOAD
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM file_upload.
+
+*local data declaration
+  DATA : lv_filename TYPE           string,
+         ls_input    LIKE LINE OF   gt_input,
+         lv_count    TYPE           i.
+
+  lv_filename = p_prefil.
+*read data from file
+  CALL FUNCTION 'GUI_UPLOAD' "Upload for Data Provider
+    EXPORTING
+      filename                      = lv_filename
+      filetype                      = 'ASC'
+      has_field_separator           = abap_true
+*     HEADER_LENGTH                 = 0
+*     READ_BY_LINE                  = abap_true
+*     DAT_MODE                      = ' '
+*     CODEPAGE                      = ' '
+*     IGNORE_CERR                   = ABAP_TRUE
+*     REPLACEMENT                   = '#'
+*     CHECK_BOM                     = ' '
+*     VIRUS_SCAN_PROFILE            =
+*     NO_AUTH_CHECK                 = ' '
+*   IMPORTING
+*     FILELENGTH                    =
+*     HEADER                        =
+    TABLES
+      data_tab                      = gt_input
+*   CHANGING
+*     ISSCANPERFORMED               = ' '
+   EXCEPTIONS
+     file_open_error               = 1
+     file_read_error               = 2
+     no_batch                      = 3
+     gui_refuse_filetransfer       = 4
+     invalid_type                  = 5
+     no_authority                  = 6
+     unknown_error                 = 7
+     bad_data_format               = 8
+     header_not_allowed            = 9
+     separator_not_allowed         = 10
+     header_too_long               = 11
+     unknown_dp_error              = 12
+     access_denied                 = 13
+     dp_out_of_memory              = 14
+     disk_full                     = 15
+     dp_timeout                    = 16
+     OTHERS                        = 17 .
+  IF sy-subrc <> 0.
+
+  ENDIF.
+
+  DESCRIBE TABLE gt_input LINES lv_count.
+  IF lv_count LE 2.
+    MESSAGE s000(zs) WITH text-002 DISPLAY LIKE gc_e.
+    LEAVE LIST-PROCESSING.
+  ENDIF.
+*Remove the header lines
+  DELETE gt_input INDEX 1.
+  DELETE gt_input INDEX 1.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_SALES_DOCUMENTS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM create_sales_documents .
+
+  DATA: ls_order_header_in      TYPE          bapisdhd1,
+        lt_order_partners       TYPE TABLE OF bapiparnr,
+        ls_input                LIKE LINE OF  gt_input,
+        ls_input_keeper         LIKE LINE OF  gt_input,
+        lt_return               TYPE TABLE OF bapiret2,
+        ls_return               LIKE LINE OF  lt_return,
+        ls_order_header_inx     TYPE          bapisdhd1x,
+        lt_order_items_in       TYPE TABLE OF bapisditm,
+        lt_order_items_inx      TYPE TABLE OF bapisditmx,
+        lt_order_schedules_in   TYPE TABLE OF bapischdl,
+        lt_order_schedules_inx  TYPE TABLE OF bapischdlx,
+        lt_order_conditions_in  TYPE TABLE OF bapicond,
+        lt_order_conditions_inx TYPE TABLE OF bapicondx,
+        lt_order_text           TYPE TABLE OF bapisdtext,
+        lv_item_no              TYPE          posnr_va,
+        lv_sold_to_party        TYPE          kunnr,
+        lv_delivery             TYPE vbeln_vl,
+        ls_material_data        TYPE bapimatdoa,
+        ls_mail_attach          TYPE ty_mail_attach,
+        ls_control_tabl         TYPE zsd_control_tabl,
+        lv_matnr                TYPE bapimatdet-material,
+        lv_mat_doc              TYPE bapi2017_gm_head_ret-mat_doc,
+        lv_mat_doc_year         TYPE bapi2017_gm_head_ret-doc_year,
+        lt_vbpok_tab            TYPE TABLE OF vbpok,
+        lt_billingdatain        TYPE TABLE OF bapivbrk,
+        ls_billingdatain        TYPE bapivbrk,
+        ls_order_log            TYPE zsd_order_log,
+        lv_count                TYPE char3 VALUE '001',
+        lt_order_log_update     TYPE TABLE OF zsd_order_log,
+        lt_partner_addresses    TYPE TABLE OF bapiaddr1.
+
+  CONSTANTS: lc_h(1)  TYPE c       VALUE 'H',
+             lc_yes   TYPE char3   VALUE 'YES',
+             lc_r     TYPE vbtyp_n VALUE 'R',
+             lc_aud   TYPE char3   VALUE 'AUD'.
+  REFRESH:lt_order_log_update,gt_ftclear,gt_ftpost.
+
+  LOOP AT gt_input INTO ls_input.
+
+    IF ls_input-indicator = lc_h.
+*sales order header data
+      PERFORM fill_header USING     ls_input
+                          CHANGING  ls_order_header_in
+                                    ls_order_header_inx.
+      IF ls_input-sold_quan CA '@'.
+        lv_sold_to_party = gc_otc.
+      ELSE.
+        lv_sold_to_party =  |{ ls_input-sold_quan ALPHA = IN }|.
+      ENDIF.
+
+*sales order partner data
+      PERFORM fill_partner TABLES lt_order_partners lt_partner_addresses
+                           USING  ls_input.
+
+      ls_order_log-zcust_inv_ref = ls_input-cuspayref.
+      ls_order_log-zsales_grp    = ls_input-sgrp_matnr.
+      ls_order_log-zcust_no      = ls_input-sold_quan.
+      gv_cust_pay_ref            = ls_input-cuspayref.
+      CONTINUE.
+    ELSE.
+*keep the values in ls_input because during at end of the values
+*gets changed to ****
+      ls_input_keeper = ls_input.
+
+**item number
+      lv_item_no = lv_item_no + 10.
+
+**logic of which material should be picked to be checked against
+**ZSD_CONTROL_TABL table is to be confirmed.
+      lv_matnr = ls_input_keeper-sgrp_matnr.
+      lv_matnr = |{ lv_matnr ALPHA = IN }|.
+**check if devliery/pgi needs to be created for the Sales Order
+      CALL FUNCTION 'BAPI_MATERIAL_GET_DETAIL'
+        EXPORTING
+          material                    = lv_matnr
+*           PLANT                       =
+*           VALUATIONAREA               =
+*           VALUATIONTYPE               =
+*           MATERIAL_EVG                =
+        IMPORTING
+          material_general_data       = ls_material_data
+*           RETURN                      =
+*           MATERIALPLANTDATA           =
+*           MATERIALVALUATIONDATA       =
+                .
+**Get the SO doument type, delivery doc type/relevance, pgi relevance
+**and the invoice doc type from the zsd_control_table
+      READ TABLE gt_control_tabl INTO ls_control_tabl WITH KEY
+      material_type = ls_material_data-matl_type
+      sales_group = ls_order_header_in-sales_grp.
+      IF sy-subrc = 0.
+
+*sales order header data
+        ls_order_header_in-doc_type    = ls_control_tabl-so_doc_type.
+        ls_order_header_inx-doc_type   = abap_true.
+
+*sales order item data
+        PERFORM fill_order_items TABLES lt_order_items_in
+                                        lt_order_items_inx
+                                 USING  ls_input lv_item_no.
+*sales order schedules line
+        PERFORM fill_order_schedules TABLES lt_order_schedules_in
+                                            lt_order_schedules_inx
+                                     USING  ls_input lv_item_no.
+*sales order conditions
+        PERFORM fill_order_conditions TABLES lt_order_conditions_in
+                                             lt_order_conditions_inx
+                                      USING  ls_input lv_item_no.
+*sales order item long texts
+        PERFORM fill_order_text TABLES lt_order_text
+                                USING  ls_input lv_item_no.
+
+*To fill the item data for PGI
+        PERFORM fill_pgi_items TABLES lt_vbpok_tab
+                             USING ls_input lv_sold_to_party lv_item_no.
+
+*To fill the item data for the billing document
+        PERFORM fill_bill_doc_items TABLES lt_billingdatain
+                                    USING ls_input lv_item_no
+                                          ls_control_tabl.
+
+        AT END OF indicator.
+
+**check if the sales order/delivery/material doc/billing/accounting/
+**clearing document already exists, if yes, do not repeat
+          READ TABLE gt_order_log INTO ls_order_log WITH KEY
+          zcust_inv_ref = ls_order_log-zcust_inv_ref
+          zsales_grp = ls_order_log-zsales_grp BINARY SEARCH.
+
+          IF sy-subrc NE 0.
+            IF rb_six = abap_true.
+              ls_order_log-zinterface_source = text-032.
+            ELSEIF rb_crm = abap_true.
+              ls_order_log-zinterface_source = text-033.
+            ELSEIF rb_ssdb = abap_true.
+              ls_order_log-zinterface_source = text-034.
+            ELSEIF rb_accu = abap_true.
+              ls_order_log-zinterface_source = text-035.
+            ENDIF.
+            ls_order_log-zcomp_code        = p_ibukrs.
+            ls_order_log-zpayment_date     = sy-datum.
+            ls_order_log-znet_inv_amt      = gv_rate.
+            ls_order_log-zcurrency         = lc_aud.
+            ls_order_log-zcreated_date     = sy-datum.
+            ls_order_log-zcreated_time     = sy-uzeit.
+            ls_order_log-zcreated_by       = sy-uname.
+          ENDIF.
+
+*create sales order
+          IF ls_order_log-zsales_order_no IS INITIAL.
+**Create the sales order only if the sales order with the same customer
+**Payment reference number has not been created previously
+
+            PERFORM create_sales_order TABLES lt_order_items_in
+                                              lt_order_items_inx
+                                              lt_order_schedules_in
+                                              lt_order_schedules_inx
+                                              lt_order_conditions_in
+                                              lt_order_conditions_inx
+                                              lt_order_partners
+                                              lt_order_text
+                                              lt_partner_addresses
+                                              lt_return
+                                       USING  ls_order_header_in
+                                              ls_order_header_inx
+                                  CHANGING ls_order_log-zsales_order_no.
+          ENDIF.
+          IF ls_order_log-ztax_amt IS INITIAL.
+**To fill the total tax for the sales order of all items
+            PERFORM get_tax_details USING ls_order_log-zsales_order_no
+                                    CHANGING ls_order_log-ztax_amt.
+          ENDIF.
+
+* create delivery
+*check if delivery is created
+          READ TABLE lt_return INTO ls_return WITH KEY type = gc_s
+                                                       id   = 'V1'
+                                                       number = 260.
+          IF sy-subrc = 0.
+            lv_delivery = ls_return-message_v3.
+            lv_delivery = |{ lv_delivery ALPHA = IN }|.
+          ENDIF.
+          IF ls_order_log-zdelivery_doc IS INITIAL.
+            ls_order_log-zdelivery_doc = lv_delivery.
+          ENDIF.
+
+          IF ( lv_delivery IS NOT INITIAL OR
+             ls_order_log-zdelivery_doc IS NOT INITIAL ) AND
+             ls_control_tabl-pgi_relevance = lc_yes AND
+             ls_order_log-zmaterial_doc IS INITIAL.
+
+**create (Post Goods Issue) PGI with reference to delivery
+            PERFORM create_post_goods_issue TABLES lt_vbpok_tab
+            USING ls_order_header_in lv_delivery
+                  ls_order_header_in ls_order_log-zsales_order_no
+            CHANGING ls_order_log.
+
+**to update Z table,get the material document number from vbfa
+            SELECT SINGLE vbeln FROM vbfa
+               INTO ls_order_log-zmaterial_doc
+              WHERE vbelv = lv_delivery
+                AND posnn = 1 AND vbtyp_n = lc_r.
+          ENDIF.
+
+* create billing document/invoice
+*Upon successful creation of delivery and PGI a billing document has to
+*be created,the reference document for the creation of billing document
+*is the outbound delivery document
+          REFRESH:lt_return.
+**Based on the control table and whether a billing doc has been created
+**previously or not, below logic is called
+          IF ls_control_tabl-delivery_doc_type IS NOT INITIAL AND
+             lv_delivery IS NOT INITIAL AND
+             ls_order_log-zbilling_doc IS INITIAL AND
+             ls_order_log-zaccounting_doc IS INITIAL.
+
+            ls_billingdatain-ref_doc = lv_delivery.
+            ls_billingdatain-ref_doc_ca = 'J'.
+         ls_billingdatain-ordbilltyp = ls_control_tabl-invoice_doc_type.
+            MODIFY lt_billingdatain FROM ls_billingdatain
+            TRANSPORTING ref_doc ref_doc_ca ordbilltyp
+            WHERE ref_doc_ca IS INITIAL AND ref_doc IS INITIAL
+            AND ordbilltyp IS INITIAL.
+
+**to create the billing document against the delivery created
+            PERFORM create_billing_document TABLES lt_billingdatain
+                                                   lt_return
+                                             USING ls_order_header_in.
+
+          ELSEIF ls_control_tabl-delivery_doc_type IS INITIAL AND
+            ls_order_log-zsales_order_no IS NOT INITIAL AND
+            ls_order_log-zbilling_doc IS INITIAL AND
+            ls_order_log-zaccounting_doc IS INITIAL.
+
+            ls_billingdatain-ref_doc = ls_order_log-zsales_order_no.
+            ls_billingdatain-ref_doc_ca = 'C'.
+         ls_billingdatain-ordbilltyp = ls_control_tabl-invoice_doc_type.
+            MODIFY lt_billingdatain FROM ls_billingdatain
+            TRANSPORTING ref_doc ref_doc_ca
+            WHERE ref_doc_ca IS INITIAL AND ref_doc IS INITIAL
+            AND ordbilltyp IS INITIAL.
+
+**to create the billing document against the sales order created
+            PERFORM create_billing_document TABLES lt_billingdatain
+                                                   lt_return
+                                             USING ls_order_header_in.
+          ENDIF.
+
+**to get the billing/accounting document number
+          READ TABLE lt_return INTO ls_return WITH KEY type = gc_s
+                                                       id   = 'VF'
+                                                       number = 311.
+          IF sy-subrc = 0 AND ls_return-message_v1 IS NOT INITIAL AND
+            ls_order_log-zbilling_doc    IS INITIAL AND
+            ls_order_log-zaccounting_doc IS INITIAL.
+            ls_order_log-zbilling_doc = ls_return-message_v1.
+            ls_order_log-zaccounting_doc = ls_return-message_v1.
+
+**to post and clear the document, if any
+*The payment made by the customer on QuickWeb is recognized and matched
+*against the Sales and Distribution invoice. SAP transaction F-28
+*(Post Incoming Payment) is used for this purpose
+
+            IF ls_order_log-zclearing_doc IS INITIAL.
+              PERFORM fill_header_for_clearing USING
+                                    ls_order_log-zbilling_doc lv_count
+                                    ls_order_log-zcust_inv_ref.
+              PERFORM fill_items_for_clearing USING lv_count.
+
+              PERFORM fill_clearing_details USING lv_sold_to_party
+                                            ls_order_log-zbilling_doc.
+**to call the posting_clearing_interface
+              PERFORM posting_clearing USING  ls_order_header_in
+                                    CHANGING ls_order_log-zclearing_doc
+                                              ls_mail_attach.
+            ENDIF.
+          ENDIF.
+
+**only if all the process are sucessful, update the log as passed
+        IF gv_sales_order_status = gc_fail OR gv_pgi_status = gc_fail OR
+          gv_invoice_status = gc_fail OR gv_clearing_status = gc_fail.
+            ls_order_log-zstatus = gc_fail.
+          ELSE.
+            ls_order_log-zstatus = gc_pass.
+          ENDIF.
+
+**fill the zsd_order_log table with the entries/modify existing
+          APPEND ls_order_log TO lt_order_log_update.
+
+        REFRESH:lt_order_partners,lt_return,lt_order_items_in,lt_return,
+      lt_order_items_inx,lt_order_schedules_in,lt_order_schedules_inx,
+      lt_order_conditions_in ,lt_order_conditions_inx,lt_order_text,
+      lt_partner_addresses,lt_vbpok_tab,lt_billingdatain.
+          CLEAR:ls_order_header_in,ls_order_header_inx,ls_control_tabl,
+          ls_return,gv_materials,gv_rate,gv_cust_pay_ref,lv_item_no,
+          lv_sold_to_party,lv_mat_doc,lv_mat_doc_year,ls_material_data,
+          lv_matnr,ls_mail_attach,ls_order_log,ls_billingdatain,
+          gv_invoice_status,gv_pgi_status,gv_invoice_status,lv_delivery,
+          gv_clearing_status,gt_ftclear,gt_ftpost,lv_count.
+        ENDAT.
+
+      ELSE.
+**to send the errors in the mail as an attachment
+        ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+        ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+        ls_mail_attach-ordreasn = p_ordrsn.
+        ls_mail_attach-rate     = gv_rate.
+        ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+        ls_mail_attach-mat      = lv_matnr.
+        ls_mail_attach-message  = text-012.
+        APPEND ls_mail_attach TO gt_mail_attach.
+        CLEAR:ls_return, ls_mail_attach.
+      ENDIF.
+    ENDIF.
+
+    CLEAR : ls_input,ls_input_keeper.
+  ENDLOOP.
+
+**modify the order log table with the newly created details
+  MODIFY zsd_order_log FROM TABLE lt_order_log_update.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_HEADER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_INPUT  text
+*      <--P_LS_ORDER_HEADER_IN  text
+*      <--P_LS_ORDER_HEADER_INX  text
+*----------------------------------------------------------------------*
+FORM fill_header  USING    ls_input            TYPE ty_input
+                  CHANGING ls_order_header_in  TYPE bapisdhd1
+                           ls_order_header_inx TYPE bapisdhd1x.
+
+  CLEAR : ls_order_header_in,ls_order_header_inx.
+*sales order header data
+  ls_order_header_in-sales_org   = p_salorg.
+  ls_order_header_inx-sales_org  = abap_true.
+  ls_order_header_in-distr_chan  = p_channl.
+  ls_order_header_inx-distr_chan = abap_true.
+  ls_order_header_in-division    = p_divisn.
+  ls_order_header_inx-division   = abap_true.
+  ls_order_header_in-sales_off   = p_soffic.
+  ls_order_header_inx-sales_off  = abap_true.
+  ls_order_header_in-sales_grp   = ls_input-sgrp_matnr.
+  ls_order_header_inx-sales_grp  = abap_true.
+  ls_order_header_in-purch_no_c  = ls_input-custpo.
+  ls_order_header_inx-purch_no_c = abap_true.
+  ls_order_header_in-ord_reason  = p_ordrsn.
+  ls_order_header_inx-ord_reason = abap_true.
+  ls_order_header_in-doc_date    = sy-datum.
+  ls_order_header_inx-doc_date   = abap_true.
+  ls_order_header_in-price_date  = p_pricng.
+  ls_order_header_inx-price_date = abap_true.
+  ls_order_header_in-bill_date   = p_billng.
+  ls_order_header_inx-bill_date  = abap_true.
+  ls_order_header_inx-updateflag = 'I'.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_ORDER_ITEMS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_INPUT  text
+*      -->P_LT_ORDER_ITEMS_IN  text
+*      -->P_LT_ORDER_ITEMS_INX  text
+*----------------------------------------------------------------------*
+FORM fill_order_items  TABLES lt_order_items_in
+                              lt_order_items_inx
+                        USING ls_input TYPE ty_input p_item_no.
+
+*data declaration
+  DATA : ls_order_items_in  TYPE  bapisditm,
+         ls_order_items_inx TYPE  bapisditmx.
+  CONSTANTS: lc_ea TYPE vrkme VALUE 'EA'.
+
+*sales order item details
+  ls_order_items_in-itm_number   = p_item_no.
+  ls_order_items_inx-itm_number  = p_item_no.
+
+  ls_order_items_in-material = |{ ls_input-sgrp_matnr ALPHA = IN }|.
+  IF ls_input-sgrp_matnr IS NOT INITIAL.
+    CONCATENATE gv_materials ',' ls_input-sgrp_matnr INTO gv_materials.
+    SHIFT gv_materials LEFT DELETING LEADING ','.
+  ENDIF.
+  ls_order_items_inx-material    = abap_true.
+
+  ls_order_items_in-target_qty   = ls_input-sold_quan.
+  ls_order_items_inx-target_qty  = abap_true.
+
+  ls_order_items_in-plant   = p_salorg.
+  ls_order_items_inx-plant  = abap_true.
+
+  ls_order_items_in-sales_unit   = lc_ea.
+  ls_order_items_inx-sales_unit  = abap_true.
+
+  ls_order_items_inx-updateflag = 'I'.
+  APPEND ls_order_items_in TO lt_order_items_in.
+  APPEND ls_order_items_inx TO lt_order_items_inx.
+  CLEAR : ls_order_items_in,ls_order_items_inx.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_ORDER_SCHEDULES
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_ORDER_SCHEDULES_IN  text
+*      -->P_LT_ORDER_SCHEDULES_INX  text
+*      -->P_LS_INPUT  text
+*----------------------------------------------------------------------*
+FORM fill_order_schedules  TABLES   lt_order_schedules_in
+                                    lt_order_schedules_inx
+                           USING    ls_input TYPE ty_input p_item_no.
+
+*data declaration
+  DATA : ls_order_schedules_in  TYPE bapischdl,
+         ls_order_schedules_inx TYPE bapischdlx.
+*fill_order_schedules
+  ls_order_schedules_in-itm_number = p_item_no.
+  ls_order_schedules_inx-itm_number = p_item_no.
+  ls_order_schedules_in-req_qty = ls_input-sold_quan.
+  ls_order_schedules_inx-req_qty = abap_true.
+  ls_order_schedules_in-req_date = sy-datum.
+  ls_order_schedules_inx-req_date = abap_true.
+  APPEND ls_order_schedules_in TO lt_order_schedules_in.
+  APPEND ls_order_schedules_inx TO lt_order_schedules_inx.
+  CLEAR : ls_order_schedules_in,ls_order_schedules_inx.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_ORDER_CONDITIONS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_ORDER_SCHEDULES_IN  text
+*      -->P_LT_ORDER_SCHEDULES_INX  text
+*      -->P_LS_INPUT  text
+*----------------------------------------------------------------------*
+FORM fill_order_conditions  TABLES   lt_order_conditions_in
+                                     lt_order_conditions_inx
+                            USING    ls_input TYPE ty_input p_item_no.
+
+*data declaration
+  DATA : ls_order_conditions_in  TYPE bapicond,
+         ls_order_conditions_inx TYPE bapicondx.
+  CONSTANTS: lc_pr01 TYPE kscha VALUE 'PR01'.
+
+*fill order conditions
+  ls_order_conditions_in-itm_number = p_item_no.
+  ls_order_conditions_inx-itm_number = p_item_no.
+  ls_order_conditions_in-cond_type = lc_pr01.
+  ls_order_conditions_inx-cond_type = abap_true.
+  ls_order_conditions_in-cond_value = ls_input-first_rate / 10.
+  gv_rate = gv_rate + ( ls_input-first_rate * ls_input-sold_quan ).
+
+  ls_order_conditions_inx-cond_value = abap_true.
+  ls_order_conditions_inx-updateflag = 'I'.
+  APPEND ls_order_conditions_in TO lt_order_conditions_in.
+  APPEND ls_order_conditions_inx TO lt_order_conditions_inx.
+  CLEAR : ls_order_conditions_in,ls_order_conditions_inx.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_TEXT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_ORDER_PARTNERS  text
+*      -->P_LS_INPUT  text
+*----------------------------------------------------------------------*
+FORM fill_order_text TABLES lt_order_text
+                     USING  ls_input TYPE ty_input p_item_no.
+
+*data declaration
+  DATA ls_order_text    TYPE bapisdtext.
+  CONSTANTS: lc_text_id TYPE tdid  VALUE '0001',
+             lc_langu   TYPE spras VALUE 'EN'.
+
+*fill texts
+  ls_order_text-itm_number = p_item_no.
+  ls_order_text-text_id    = lc_text_id.
+  ls_order_text-langu      = lc_langu.
+  ls_order_text-text_line  = ls_input-last_text.
+  APPEND ls_order_text TO lt_order_text.
+  CLEAR ls_order_text.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_PARTNER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_ORDER_PARTNERS  text
+*      -->P_LS_INPUT  text
+*----------------------------------------------------------------------*
+FORM fill_partner  TABLES   lt_order_partners lt_partner_addresses
+                   USING    ls_input TYPE ty_input.
+
+*data declaration
+  DATA :ls_order_partners      TYPE bapiparnr,
+        ls_partner_addresses   TYPE bapiaddr1.
+  CONSTANTS:lc_role TYPE parvw VALUE 'AG'.
+
+*Sold to party
+  ls_order_partners-partn_role = lc_role.
+
+  IF ls_input-sold_quan CA '@'.
+    ls_order_partners-partn_numb = gc_otc.
+    ls_order_partners-country    = gc_au.
+    ls_order_partners-postl_code = ls_input-post_code.
+    ls_order_partners-city       = ls_input-city.
+    ls_order_partners-addr_link  = gv_adrnr.
+    CONCATENATE ls_input-first_rate ls_input-last_text INTO
+  ls_order_partners-name SEPARATED BY space.
+
+    ls_partner_addresses-addr_no = gv_adrnr.
+    ls_partner_addresses-country = gc_au.
+    ls_partner_addresses-city    = ls_input-city.
+    ls_partner_addresses-name    = ls_order_partners-name.
+    ls_partner_addresses-e_mail  = ls_input-sold_quan.
+    APPEND ls_partner_addresses TO lt_partner_addresses.
+
+  ELSE.
+*to add leading zeros
+    ls_order_partners-partn_numb = |{ ls_input-sold_quan ALPHA = IN }|.
+  ENDIF.
+
+  APPEND ls_order_partners TO lt_order_partners.
+  CLEAR:ls_partner_addresses,ls_order_partners.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_SALES_ORDER
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_ORDER_ITEMS_IN  text
+*      -->P_LT_ORDER_ITEMS_INX  text
+*      -->P_LT_ORDER_SCHEDULES_IN  text
+*      -->P_LT_ORDER_SCHEDULES_INX  text
+*      -->P_LT_ORDER_CONDITIONS_IN  text
+*      -->P_LT_ORDER_CONDITIONS_INX  text
+*      -->P_LS_ORDER_HEADER_IN  text
+*      -->P_LS_ORDER_HEADER_INX  text
+*----------------------------------------------------------------------*
+FORM create_sales_order  TABLES   lt_order_items_in
+                                  lt_order_items_inx
+                                  lt_order_schedules_in
+                                  lt_order_schedules_inx
+                                  lt_order_conditions_in
+                                  lt_order_conditions_inx
+                                  lt_order_partners
+                                  lt_order_text
+                                  lt_partner_addresses
+                                  lt_return TYPE bapiret2_t
+                         USING    ls_order_header_in TYPE bapisdhd1
+                                  ls_order_header_inx
+                         CHANGING ls_salesdocument TYPE vbeln.
+
+  DATA: ls_return      TYPE bapiret2,
+        ls_mail_attach TYPE ty_mail_attach.
+
+*call bapi to create sales order
+  CALL FUNCTION 'BAPI_SALESORDER_CREATEFROMDAT2'
+    EXPORTING
+*     SALESDOCUMENTIN      =
+      order_header_in      = ls_order_header_in
+      order_header_inx     = ls_order_header_inx
+*     SENDER               =
+*     BINARY_RELATIONSHIPTYPE       =
+*     INT_NUMBER_ASSIGNMENT         =
+*     BEHAVE_WHEN_ERROR    =
+*     LOGIC_SWITCH         =
+      testrun              = p_test
+*     CONVERT              = ' '
+    IMPORTING
+      salesdocument        = ls_salesdocument
+    TABLES
+      return               = lt_return
+      order_items_in       = lt_order_items_in
+      order_items_inx      = lt_order_items_inx
+      order_partners       = lt_order_partners
+      order_schedules_in   = lt_order_schedules_in
+      order_schedules_inx  = lt_order_schedules_inx
+      order_conditions_in  = lt_order_conditions_in
+      order_conditions_inx = lt_order_conditions_inx
+*     ORDER_CFGS_REF       =
+*     ORDER_CFGS_INST      =
+*     ORDER_CFGS_PART_OF   =
+*     ORDER_CFGS_VALUE     =
+*     ORDER_CFGS_BLOB      =
+*     ORDER_CFGS_VK        =
+*     ORDER_CFGS_REFINST   =
+*     ORDER_CCARD          =
+      order_text           = lt_order_text
+*     ORDER_KEYS           =
+*     EXTENSIONIN          =
+      partneraddresses     = lt_partner_addresses
+*     EXTENSIONEX          =
+    .
+*if sales order is created, save to database
+  IF ls_salesdocument IS NOT INITIAL.
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+      EXPORTING
+        wait = abap_true
+      IMPORTING
+        return        = ls_return.
+
+  ELSEIF p_test = abap_true.
+    LOOP AT lt_return INTO ls_return.
+      ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+      ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+      ls_mail_attach-ordreasn = p_ordrsn.
+      ls_mail_attach-mat      = gv_materials.
+      ls_mail_attach-rate     = gv_rate.
+      ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+      ls_mail_attach-message  = ls_return-message.
+      APPEND ls_mail_attach TO gt_mail_attach.
+      CLEAR:ls_return, ls_mail_attach.
+    ENDLOOP.
+
+  ELSE.
+    gv_sales_order_status = gc_fail.
+    LOOP AT lt_return INTO ls_return WHERE type = gc_e.
+      ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+      ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+      ls_mail_attach-ordreasn = p_ordrsn.
+      ls_mail_attach-mat      = gv_materials.
+      ls_mail_attach-rate     = gv_rate.
+      ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+      ls_mail_attach-message  = ls_return-message.
+      APPEND ls_mail_attach TO gt_mail_attach.
+      CLEAR:ls_return, ls_mail_attach.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_BILLING_DOCUMENT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_RETURN  text
+*----------------------------------------------------------------------*
+FORM create_billing_document TABLES lt_billingdatain STRUCTURE bapivbrk
+                                    lt_return        STRUCTURE bapiret2
+*                             USING  ls_salesdoc_delivery
+                             USING ls_order_header_in TYPE bapisdhd1.
+
+*local data declaration
+  DATA : "ls_billingdatain   LIKE  LINE  OF lt_billingdatain,
+         ls_return          TYPE           bapiret2,
+         lt_success         TYPE  TABLE OF bapivbrksuccess,
+         lv_vgbel           TYPE           vbeln,
+         ls_mail_attach     TYPE ty_mail_attach.
+
+*call bapi to create billing document
+  CALL FUNCTION 'BAPI_BILLINGDOC_CREATEMULTIPLE'
+    EXPORTING
+*     CREATORDATAIN    =
+      testrun          = p_test
+*     POSTING          =
+    TABLES
+      billingdatain    = lt_billingdatain
+*     conditiondatain  = lt_conditiondatain
+*     CCARDDATAIN      =
+*     TEXTDATAIN       =
+*     ERRORS           =
+      return           = lt_return
+      success          = lt_success.
+
+*commit to database if it is successful
+  IF lt_success IS NOT INITIAL.
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+      EXPORTING
+        wait      = abap_true
+      IMPORTING
+        return    = ls_return .
+  ELSE.
+    gv_invoice_status = gc_fail.
+    LOOP AT lt_return INTO ls_return WHERE type = gc_e.
+      ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+      ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+      ls_mail_attach-ordreasn = p_ordrsn.
+      ls_mail_attach-mat      = gv_materials.
+      ls_mail_attach-rate     = gv_rate.
+      ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+      ls_mail_attach-message  = ls_return-message.
+      APPEND ls_mail_attach TO gt_mail_attach.
+      CLEAR:ls_return, ls_mail_attach.
+    ENDLOOP.
+  ENDIF.
+  REFRESH: lt_success,lt_billingdatain.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  CREATE_POST_GOODS_ISSUE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_ORDER_HEADER_IN  text
+*----------------------------------------------------------------------*
+FORM create_post_goods_issue
+              TABLES lt_vbpok_tab STRUCTURE vbpok
+              USING  p_input p_delivery
+                     ls_order_header_in TYPE bapisdhd1
+                     ls_salesdocument
+              CHANGING ls_order_log TYPE zsd_order_log.
+
+  DATA: lt_return           TYPE TABLE OF bapiret2,
+        ls_return           TYPE bapiret2,
+        ls_prot             TYPE          prott,
+        ls_goodsmvt_header  TYPE bapi2017_gm_head_01,
+        ls_mail_attach      TYPE ty_mail_attach,
+        ls_goodsmvt_item    TYPE bapi2017_gm_item_create,
+        ls_goodsmvt_ref_ewm TYPE /spe/bapi2017_gm_ref_ewm,
+        ls_vbok_wa          TYPE vbkok,
+        lv_delivery         TYPE likp-vbeln,
+        ls_vbpok            TYPE vbpok,
+        lt_prot             TYPE TABLE OF prott,
+        lv_arbgb            TYPE t100-arbgb,
+        lv_msgnr            TYPE t100-msgnr,
+        lv_msgtext          TYPE char300,
+        lv_msgv1            TYPE char50,
+        lv_msgv2            TYPE char50,
+        lv_msgv3            TYPE char50,
+        lv_msgv4            TYPE char50,
+        ls_error_any        TYPE xfeld.
+
+  CONSTANTS: lc_goodsmvt_code TYPE bapi2017_gm_code VALUE '06',
+             lc_doc_cat       TYPE vbtyp            VALUE 'J'.
+
+  ls_vbpok-vbeln      = ls_salesdocument.
+  ls_vbpok-vbeln_vl   = p_delivery.
+  ls_vbpok-vbeln_vl   = |{ ls_vbpok-vbeln_vl ALPHA = IN }|.
+  ls_vbok_wa-vbeln_vl = ls_vbpok-vbeln_vl.
+  ls_vbok_wa-vbtyp_vl = lc_doc_cat.
+  ls_vbok_wa-komue    = abap_true.
+  ls_vbok_wa-wabuc    = abap_true.
+  lv_delivery         = ls_vbpok-vbeln_vl.
+
+  MODIFY lt_vbpok_tab FROM ls_vbpok TRANSPORTING vbeln_vl vbeln
+  WHERE vbeln_vl IS INITIAL AND vbeln IS INITIAL.
+
+  CALL FUNCTION 'WS_DELIVERY_UPDATE'
+    EXPORTING
+      vbkok_wa                           = ls_vbok_wa
+*   SYNCHRON                           = ' '
+*   NO_MESSAGES_UPDATE                 = ' '
+*   COMMIT                             = abap_true
+      delivery                           = lv_delivery
+      update_picking                     = abap_true
+*   NICHT_SPERREN                      = ' '
+*   IF_CONFIRM_CENTRAL                 = ' '
+*   IF_WMPP                            = ' '
+*   IF_GET_DELIVERY_BUFFERED           = ' '
+*   IF_NO_GENERIC_SYSTEM_SERVICE       = ' '
+      if_database_update                 = '1'
+*   IF_NO_INIT                         = abap_true
+*   IF_NO_READ                         = ' '
+      if_error_messages_send_0           = space
+*   IF_NO_BUFFER_REFRESH               = abap_true
+*   IT_PARTNER_UPDATE                  =
+*   IT_SERNR_UPDATE                    =
+*   IF_NO_REMOTE_CHG                   = ' '
+*   IF_NO_MES_UPD_PACK                 = ' '
+*   IF_LATE_DELIVERY_UPD               = ' '
+  IMPORTING
+    ef_error_any_0                     = ls_error_any
+*    ef_error_in_item_deletion_0        =
+*    ef_error_in_pod_update_0           =
+*    ef_error_in_interface_0            =
+*    ef_error_in_goods_issue_0          =
+*    ef_error_in_final_check_0          =
+*    ef_error_partner_update            =
+*    ef_error_sernr_update              =
+    TABLES
+      vbpok_tab                          = lt_vbpok_tab
+      prot                               = lt_prot
+*   VERKO_TAB                          =
+*   VERPO_TAB                          =
+*   VBSUPCON_TAB                       =
+*   IT_VERPO_SERNR                     =
+*   IT_PACKING                         =
+*   IT_PACKING_SERNR                   =
+*   IT_REPACK                          =
+*   IT_HANDLING_UNITS                  =
+*   IT_OBJECTS                         =
+*   ET_CREATED_HUS                     =
+*   TVPOD_TAB                          =
+*   IT_TMSTMP                          =
+*   IT_BAPIADDR1                       =
+*   IT_TEXTL                           =
+*   IT_TEXTH                           =
+*   IT_AAC_ITEM_BLOCK                  =
+*   IT_HU_HEADER_EPC                   =
+*   IT_HU_ITEMS_EPC                    =
+            .
+*if sales order is created, save to database
+  IF ls_error_any IS INITIAL.
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'
+      EXPORTING
+        wait    = abap_true
+      IMPORTING
+        return  = ls_return.
+  ELSE.
+
+    gv_pgi_status = gc_fail.
+    LOOP AT lt_prot INTO ls_prot.
+      lv_arbgb = ls_prot-msgid.
+      lv_msgnr = ls_prot-msgno.
+      lv_msgv1 = ls_prot-msgv1.
+      lv_msgv2 = ls_prot-msgv2.
+      lv_msgv3 = ls_prot-msgv3.
+      lv_msgv4 = ls_prot-msgv4.
+
+      CALL FUNCTION 'MASS_MESSAGE_GET'
+        EXPORTING
+          sprsl                   = sy-langu
+          arbgb                   = lv_arbgb
+          msgnr                   = lv_msgnr
+          msgv1                   = lv_msgv1
+          msgv2                   = lv_msgv2
+          msgv3                   = lv_msgv3
+          msgv4                   = lv_msgv4
+        IMPORTING
+          msgtext                 = lv_msgtext
+        EXCEPTIONS
+          message_not_found       = 1
+          OTHERS                  = 2.
+      IF sy-subrc <> 0.
+* Implement suitable error handling here
+      ENDIF.
+
+      ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+      ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+      ls_mail_attach-ordreasn = p_ordrsn.
+      ls_mail_attach-mat      = gv_materials.
+      ls_mail_attach-rate     = gv_rate.
+      ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+      ls_mail_attach-message  = lv_msgtext.
+      APPEND ls_mail_attach TO gt_mail_attach.
+
+      CLEAR:ls_prot,lv_msgtext,lv_arbgb,lv_msgnr,ls_mail_attach,
+      lv_msgv1,lv_msgv2,lv_msgv3,lv_msgv4.
+    ENDLOOP.
+  ENDIF.
+
+**to avoid the issue of several deliveries getting created, and updating
+*multiple deliveries at the same time
+  CALL FUNCTION 'RV_DELIVERY_INIT'
+  EXPORTING
+   status_buff_init       = abap_true
+*   TEXT_MEMORY_INIT       = ' '
+*   PP_DELIVERY            = ' '
+*   I_CALL_ACTIVITY        = ' '
+*   IF_NO_DEQUE            = ' '
+          .
+
+  CLEAR:ls_goodsmvt_ref_ewm,ls_goodsmvt_header,ls_return.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  SEND_MAIL
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM send_mail.
+*For getting the email addresses of recipients
+  DATA: ls_document_data TYPE sodocchgi1,
+        ls_mail_attach   TYPE ty_mail_attach,
+        lt_lines         TYPE TABLE OF tline,
+        ls_lines         TYPE tline,
+        lt_receivers     TYPE STANDARD TABLE OF somlreci1,
+        ls_receivers     TYPE somlreci1,
+        lt_container     TYPE STANDARD TABLE OF swcont,
+        ls_container     TYPE swcont,
+        lt_actors        TYPE STANDARD TABLE OF swhactor,
+        lv_index         TYPE sy-tabix,
+        ls_mail          TYPE solisti1,
+        lt_mail          TYPE TABLE OF solisti1,
+        ls_objpack       TYPE sopcklsti1,
+        lt_objpack       TYPE STANDARD TABLE OF sopcklsti1,
+        lt_attachment    TYPE STANDARD TABLE OF solisti1,
+        ls_attachment    TYPE solisti1,
+        lv_sent_to_all   LIKE sonv-flag,
+        lt_adr6          TYPE STANDARD TABLE OF ty_adr6,
+        ls_adr6          TYPE ty_adr6,
+        lv_uname         TYPE soextreci1-receiver.
+
+  CONSTANTS: lc_object      TYPE hrobjec_14  VALUE 'AC91000030', "rule
+             lc_raw         TYPE soodk-objtp VALUE 'RAW',
+             lc_doctype     TYPE so_obj_tp   VALUE 'XLS',
+             lc_sensitivity TYPE so_obj_sns  VALUE 'F',
+             lc_value       TYPE swc_value   VALUE 'ALL',
+             lc_recty       TYPE so_escape      VALUE 'U',
+             lc_st          TYPE thead-tdid     VALUE 'ST',
+             lc_language    TYPE thead-tdspras  VALUE 'E',
+             lc_obj         TYPE thead-tdobject VALUE 'TEXT',
+             lc_element     TYPE swc_elem       VALUE 'Sales_Documents',
+             lc_name        TYPE thead-tdname   VALUE
+                            'ZSD_SO_SPATIAL_SERVICES_MAIL_BODY',
+             lc_addr_type   TYPE soextreci1-adr_typ VALUE 'B'.
+
+  REFRESH : lt_container, lt_adr6, lt_receivers, lt_actors,
+  lt_objpack.
+
+  CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+*Import container for role resolution
+  ls_container-element = lc_element.
+  ls_container-value   = lc_value.
+  APPEND ls_container TO lt_container.
+
+*Get all the recipients of the mail from the rule
+  CALL FUNCTION 'RH_GET_ACTORS'
+    EXPORTING
+      act_object      = lc_object
+    TABLES
+      actor_container = lt_container
+      actor_tab       = lt_actors. "Role resolution result
+
+  CHECK NOT lt_actors[] IS INITIAL .
+*Get email addresses of recipients of the bulk receipting notification
+*mail based on their personnel number and address number from usr21
+  SELECT smtp_addr
+    FROM adr6
+    AS a INNER JOIN usr21 AS b ON
+       a~addrnumber = b~addrnumber AND
+       a~persnumber = b~persnumber
+    INTO TABLE lt_adr6
+    FOR ALL ENTRIES IN lt_actors
+       WHERE bname = lt_actors-objid.
+
+*To fill the document recipients with send attributes
+  LOOP AT lt_adr6 INTO ls_adr6.
+    ls_receivers-receiver = ls_adr6-smtp_addr. "email address
+    ls_receivers-rec_type = lc_recty. "U
+    APPEND ls_receivers TO lt_receivers.
+    CLEAR : ls_adr6, ls_receivers.
+  ENDLOOP.
+
+*for the lines to be displayed in the mail
+  REFRESH : lt_lines.
+  CALL FUNCTION 'READ_TEXT'
+    EXPORTING
+      client                  = sy-mandt
+      id                      = lc_st
+      language                = lc_language
+      name                    = lc_name
+      object                  = lc_obj
+    TABLES
+      lines                   = lt_lines
+    EXCEPTIONS
+      id                      = 1
+      language                = 2
+      name                    = 3
+      not_found               = 4
+      object                  = 5
+      reference_check         = 6
+      wrong_access_to_archive = 7
+      OTHERS                  = 8.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+  LOOP AT lt_lines INTO ls_lines.
+    ls_mail-line = ls_lines-tdline.
+    APPEND ls_mail TO lt_mail.
+    CLEAR: ls_lines, ls_mail.
+  ENDLOOP.
+
+  IF lt_receivers IS NOT INITIAL.
+* Send the document
+    lv_uname = sy-uname.
+
+*for the header of the xlsx attachment in the mail
+    CONCATENATE text-005 text-006 text-007 text-008 text-009 text-010
+    text-011 INTO
+    ls_attachment SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+
+    APPEND ls_attachment TO lt_attachment.
+    CLEAR :ls_attachment.
+
+*for the item details of the xlsx attachment to the mail
+    LOOP AT gt_mail_attach INTO ls_mail_attach.
+      CONCATENATE
+      ls_mail_attach-sgrp
+      ls_mail_attach-custpo
+      ls_mail_attach-ordreasn
+      ls_mail_attach-mat
+      ls_mail_attach-rate
+      ls_mail_attach-pay
+      ls_mail_attach-message
+      INTO ls_attachment SEPARATED BY
+       cl_abap_char_utilities=>horizontal_tab.
+
+      CONCATENATE cl_abap_char_utilities=>newline ls_attachment
+      INTO ls_attachment.
+
+      APPEND ls_attachment TO lt_attachment.
+      CLEAR :ls_attachment,ls_mail_attach.
+    ENDLOOP.
+
+*to pass the attachment
+    ls_objpack-transf_bin = space.
+    ls_objpack-head_start = 1.
+    ls_objpack-head_num = 0.
+    ls_objpack-body_start = 1.
+    ls_objpack-body_num = lines( lt_mail ).
+    ls_objpack-doc_type = lc_raw.
+    APPEND ls_objpack TO lt_objpack.
+    CLEAR : ls_objpack.
+
+    ls_objpack-transf_bin  = abap_true.
+    ls_objpack-head_start  = 1.
+    ls_objpack-head_num    = 1.
+    ls_objpack-body_start  = 1.
+    ls_objpack-body_num    = lines( lt_attachment ).
+    ls_objpack-doc_type    = lc_doctype. "give RAW for a txt file.
+
+    IF rb_six = abap_true.
+      ls_objpack-obj_name = text-032.
+      ls_objpack-obj_descr = ls_objpack-obj_name.
+    ELSEIF rb_crm = abap_true.
+      ls_objpack-obj_name = text-033.
+      ls_objpack-obj_descr = ls_objpack-obj_name.
+    ELSEIF rb_ssdb = abap_true.
+      ls_objpack-obj_name = text-034.
+      ls_objpack-obj_descr = ls_objpack-obj_name.
+    ELSEIF rb_accu = abap_true.
+      ls_objpack-obj_name = text-035.
+      ls_objpack-obj_descr = ls_objpack-obj_name.
+    ENDIF.
+
+    ls_objpack-doc_size    = ls_objpack-body_num * 255.
+    APPEND ls_objpack TO lt_objpack.
+    CLEAR ls_objpack.
+
+* Fill the document
+*** Get document size
+    DESCRIBE TABLE lt_attachment LINES lv_index.
+    READ TABLE lt_attachment INTO ls_attachment INDEX lv_index.
+    ls_document_data-doc_size = ( lv_index - 1 ) * 255 + strlen(
+ls_attachment ).
+    ls_document_data-obj_name  = text-004.
+    ls_document_data-obj_descr = text-004. "mail subject
+    ls_document_data-obj_langu    = sy-langu.
+    ls_document_data-sensitivty   = lc_sensitivity.
+
+*to mail the document with the attachment
+    CALL FUNCTION 'SO_DOCUMENT_SEND_API1'
+      EXPORTING
+        document_data              = ls_document_data
+        put_in_outbox              = abap_true
+        sender_address             = lv_uname
+        sender_address_type        = lc_addr_type
+        commit_work                = abap_true
+      IMPORTING
+        sent_to_all                = lv_sent_to_all
+      TABLES
+        packing_list               = lt_objpack
+        contents_bin               = lt_attachment
+        contents_txt               = lt_mail "mail content
+        receivers                  = lt_receivers "mail recipients
+      EXCEPTIONS
+        too_many_receivers         = 1
+        document_not_sent          = 2
+        document_type_not_exist    = 3
+        operation_no_authorization = 4
+        parameter_error            = 5
+        x_error                    = 6
+        enqueue_error              = 7
+        OTHERS                     = 8.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+  ENDIF.
+
+  CLEAR : ls_document_data.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_PGI_ITEMS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_GOODSMVT_ITEM  text
+*      -->P_LS_INPUT  text
+*----------------------------------------------------------------------*
+FORM fill_pgi_items  TABLES lt_vbpok_tab
+                     USING  ls_input TYPE ty_input p_sold_to_party
+                            lv_item_no.
+
+  DATA:ls_vbpok_tab TYPE vbpok.
+
+  ls_vbpok_tab-posnr_vl = lv_item_no.
+  ls_vbpok_tab-posnn    = lv_item_no.
+  ls_vbpok_tab-werks    = p_salorg.
+  ls_vbpok_tab-matnr    = ls_input-sgrp_matnr.
+  ls_vbpok_tab-matnr    = |{ ls_vbpok_tab-matnr ALPHA = IN }|.
+  ls_vbpok_tab-pikmg    = ls_input-sold_quan.
+
+  APPEND ls_vbpok_tab TO lt_vbpok_tab.
+  CLEAR:ls_vbpok_tab.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_DATA
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM get_data .
+
+  CONSTANTS:lc_name TYPE rvari_vnam VALUE 'Z_FI_INCOMING_BANK_GL',
+            lc_s    TYPE rsscr_kind VALUE 'S',
+            lc_i    TYPE tvarv_sign VALUE 'I'.
+
+**to get all the previously processed entries
+  IF gt_input IS NOT INITIAL.
+    REFRESH:gt_control_tabl,gt_tvarvc,gt_order_log.
+    CLEAR:gv_adrnr.
+
+**to get the spatial document types
+    SELECT * FROM zsd_control_tabl
+      INTO TABLE gt_control_tabl.
+
+**to get the incoming GL account for the bank company code
+**The incoming account GL is maintained with respect to the bank bukrs
+**Bank company code in low field and corresponding acc gl in high field
+    SELECT sign opti low high
+      FROM tvarvc
+      INTO TABLE gt_tvarvc
+      WHERE name = lc_name
+        AND type = lc_s
+        AND sign = lc_i.
+
+**To get all the sales orders/delivery/invoice/accounting/clearing doc
+**details that were previously created
+    SELECT * FROM zsd_order_log
+      INTO TABLE gt_order_log.
+*      FOR ALL ENTRIES IN lt_input
+*      WHERE zcust_inv_ref = lt_input-cuspay_text
+*        AND zsales_grp = ls_input-sgrp_matnr.
+    IF gt_order_log IS NOT INITIAL.
+      SORT gt_order_log BY zcust_inv_ref zsales_grp.
+    ENDIF.
+
+**Get the one time customer, address number adrnr
+    SELECT SINGLE adrnr
+      FROM kna1
+      INTO gv_adrnr
+     WHERE kunnr = gc_otc.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_BILL_DOC_ITEMS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LT_BILLINGDATAIN  text
+*      -->P_LV_SOLD_TO_PARTY  text
+*      -->P_LV_ITEM_NO  text
+*----------------------------------------------------------------------*
+FORM fill_bill_doc_items TABLES lt_billingdatain STRUCTURE bapivbrk
+                         USING  ls_input TYPE ty_input
+                                lv_item_no
+                                ls_control_tabl TYPE zsd_control_tabl.
+
+  DATA: ls_billingdatain TYPE bapivbrk.
+**To fill the billing document item details
+
+  ls_billingdatain-salesorg   = p_salorg.
+  ls_billingdatain-distr_chan = p_channl.
+  ls_billingdatain-division   = p_divisn.
+  ls_billingdatain-doc_type   = ls_control_tabl-so_doc_type.
+  ls_billingdatain-sold_to    = ls_input-sold_quan.
+  ls_billingdatain-plant      = p_salorg.
+  ls_billingdatain-material   = ls_input-sgrp_matnr.
+  ls_billingdatain-req_qty    = ls_input-sold_quan.
+  ls_billingdatain-ref_item   = lv_item_no.
+  ls_billingdatain-itm_number = lv_item_no.
+  ls_billingdatain-hg_lv_item = lv_item_no.
+  APPEND ls_billingdatain TO lt_billingdatain.
+  CLEAR:ls_billingdatain.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  DISPLAY_ALV
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM display_alv .
+
+  CONSTANTS : lc_a TYPE pspar-tclas  VALUE 'A'.
+
+*field catalogue
+  PERFORM build_fieldcat.
+*Layout for alv
+  PERFORM build_layout.
+*  ** Displays the output in a ALV GRID
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program     = sy-repid
+      is_layout              = gt_layout
+      it_fieldcat            = gt_fieldcat
+      i_default              = abap_true
+      i_save                 = lc_a
+    TABLES
+      t_outtab               = gt_mail_attach
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_FIELDCAT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM build_fieldcat .
+  REFRESH gt_fieldcat[].
+
+  PERFORM fill_fieldcat USING :text-014 text-028 text-021,
+                               text-015 text-028 text-022,
+                               text-016 text-028 text-023,
+                               text-017 text-028 text-024,
+                               text-018 text-028 text-025,
+                               text-019 text-028 text-026,
+                               text-020 text-028 text-027.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  BUILD_LAYOUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM build_layout .
+  gt_layout-zebra = abap_true.
+  gt_layout-colwidth_optimize = abap_true.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_FIELDCAT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_TEXT_108  text
+*      -->P_TEXT_009  text
+*      -->P_TEXT_109  text
+*----------------------------------------------------------------------*
+FORM fill_fieldcat USING pv_lc1 pv_lc2 pv_lc3.
+*data declaration
+  DATA ls_fieldcat  TYPE slis_fieldcat_alv.
+
+* Fill the field catalogue
+  ls_fieldcat-fieldname = pv_lc1.
+  ls_fieldcat-tabname   = pv_lc2.
+  ls_fieldcat-seltext_l = pv_lc3.
+  APPEND ls_fieldcat TO gt_fieldcat.
+  CLEAR ls_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  POSTING_CLEARING
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM posting_clearing USING    ls_order_header_in TYPE bapisdhd1
+                      CHANGING ls_order_log-zclearing_doc
+                               ls_mail_attach     TYPE ty_mail_attach.
+
+  DATA : lv_msgid	      TYPE sy-msgid,
+         lv_msgno       TYPE sy-msgno,
+         lv_msgty       TYPE sy-msgty,
+         lv_msgv1       TYPE sy-msgv1,
+         lv_msgv2       TYPE sy-msgv2,
+         lv_msgv3       TYPE sy-msgv3,
+         lv_msgv4       TYPE sy-msgv4,
+         lv_subrc       TYPE sy-subrc,
+         lv_arbgb       TYPE t100-arbgb,
+         lv_msgnr       TYPE t100-msgnr,
+         lv_msgtext     TYPE char300,
+         lt_blntab      TYPE TABLE OF blntab,
+         lt_fttax       TYPE TABLE OF fttax.
+  CONSTANTS:lc_auglv    TYPE t041a-auglv    VALUE 'EINGZAHL',
+            lc_tcode    TYPE sy-tcode       VALUE 'FB05',
+            lc_sgfunct  TYPE rfipi-sgfunct  VALUE 'C',
+            lc_function TYPE rfipi-funct    VALUE 'C',
+            lc_mode     TYPE rfpdo-allgazmd VALUE 'N',
+            lc_update   TYPE rfpdo-allgvbmd VALUE 'S',
+            lc_msgid    TYPE sy-msgid       VALUE 'F5'.
+
+  CLEAR:lv_msgid,lv_msgno,lv_msgty,lv_msgv1,lv_msgv2,lv_msgv3,lv_msgv4,
+  lv_subrc,lv_msgtext.
+
+  CALL FUNCTION 'POSTING_INTERFACE_START'
+        EXPORTING
+          i_client           = sy-mandt
+          i_function         = lc_function
+          i_mode             = lc_mode
+          i_update           = lc_update
+        EXCEPTIONS
+          client_incorrect   = 1
+          function_invalid   = 2
+          group_name_missing = 3
+          mode_invalid       = 4
+          update_invalid     = 5
+          user_invalid       = 6
+          OTHERS             = 7.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+  REFRESH:lt_blntab,lt_fttax.
+  WAIT UP TO 5 SECONDS.
+*For clearing the open items
+  CALL FUNCTION 'POSTING_INTERFACE_CLEARING'
+    EXPORTING
+      i_auglv                    = lc_auglv "Incoming payment
+      i_tcode                    = lc_tcode     "Tcode
+      i_sgfunct                  = lc_sgfunct
+    IMPORTING
+      e_msgid                    = lv_msgid
+      e_msgno                    = lv_msgno
+      e_msgty                    = lv_msgty
+      e_msgv1                    = lv_msgv1
+      e_msgv2                    = lv_msgv2
+      e_msgv3                    = lv_msgv3
+      e_msgv4                    = lv_msgv4
+      e_subrc                    = lv_subrc
+    TABLES
+      t_blntab                   = lt_blntab
+      t_ftclear                  = gt_ftclear
+      t_ftpost                   = gt_ftpost
+      t_fttax                    = lt_fttax
+    EXCEPTIONS
+      clearing_procedure_invalid = 1
+      clearing_procedure_missing = 2
+      table_t041a_empty          = 3
+      transaction_code_invalid   = 4
+      amount_format_error        = 5
+      too_many_line_items        = 6
+      company_code_invalid       = 7
+      screen_not_found           = 8
+      no_authorization           = 9
+      OTHERS                     = 10.
+
+  IF lv_msgid = lc_msgid AND lv_msgty = lc_update AND lv_msgno = 312.
+    ls_order_log-zclearing_doc = lv_msgv1.
+  ELSE.
+    gv_clearing_status = gc_fail.
+    lv_arbgb = lv_msgid.
+    lv_msgnr = lv_msgno.
+**to catch the error message for posting
+    CALL FUNCTION 'MASS_MESSAGE_GET'
+      EXPORTING
+        sprsl                   = sy-langu
+        arbgb                   = lv_arbgb
+        msgnr                   = lv_msgnr
+        msgv1                   = lv_msgv1
+        msgv2                   = lv_msgv2
+        msgv3                   = lv_msgv3
+        msgv4                   = lv_msgv4
+      IMPORTING
+        msgtext                 = lv_msgtext
+      EXCEPTIONS
+        message_not_found       = 1
+        OTHERS                  = 2.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+    ls_mail_attach-sgrp     = ls_order_header_in-sales_grp.
+    ls_mail_attach-custpo   = ls_order_header_in-purch_no_c.
+    ls_mail_attach-ordreasn = p_ordrsn.
+    ls_mail_attach-mat      = gv_materials.
+    ls_mail_attach-rate     = gv_rate.
+    ls_mail_attach-pay      = gv_cust_pay_ref."to be coded
+    ls_mail_attach-message  = lv_msgtext.
+    APPEND ls_mail_attach TO gt_mail_attach.
+  ENDIF.
+
+*To commit the posting/ clearing
+  CALL FUNCTION 'POSTING_INTERFACE_END'
+    EXPORTING
+      i_bdcimmed              = abap_true
+    EXCEPTIONS
+      session_not_processable = 1
+      OTHERS                  = 2.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_HEADER_FOR_CLEARING
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM fill_header_for_clearing USING ls_order_log-zbilling_doc lv_count
+                                    ls_order_log-zcust_inv_ref.
+
+  DATA: ls_ftpost     TYPE ftpost.
+  CONSTANTS: lc_aud   TYPE waerk VALUE 'AUD',
+             lc_dz    TYPE blart VALUE 'DZ'.
+
+  ls_ftpost-stype = text-043. "Header entry indicator
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-044."Company code field
+  ls_ftpost-fval = p_bbukrs. "comp code value 6000
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-043.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-045. "document date field
+  CONCATENATE sy-datum+6(2) sy-datum+4(2) sy-datum+0(4)
+  INTO ls_ftpost-fval SEPARATED BY '.'.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-043.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-046. "document currency field
+  ls_ftpost-fval = lc_aud.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-043.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-047. "document type field
+  ls_ftpost-fval = lc_dz.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-043.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-048. "reference number field
+  ls_ftpost-fval = ls_order_log-zbilling_doc.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-043.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-053. "text
+  ls_ftpost-fval = ls_order_log-zcust_inv_ref.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_ITEMS_FOR_CLEARING
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM fill_items_for_clearing USING lv_count.
+
+  DATA: ls_ftpost TYPE ftpost,
+        ls_tvarvc TYPE ty_tvarvc.
+  CONSTANTS:lc_40 TYPE bschl VALUE '40'.
+
+  ls_ftpost-stype = text-055.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-049. "Posting Key of Bank account line
+  ls_ftpost-fval = lc_40.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-055. "Item entry indicator
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-050. "Bank account value
+  READ TABLE gt_tvarvc INTO ls_tvarvc WITH KEY low = p_bbukrs.
+  IF sy-subrc = 0.
+    ls_ftpost-fval = ls_tvarvc-high.
+  ENDIF.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost,ls_tvarvc.
+
+  ls_ftpost-stype = text-055.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam = text-051. "bank debit amount
+  ls_ftpost-fval = gv_rate.
+  SHIFT ls_ftpost-fval LEFT DELETING LEADING space.
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+  ls_ftpost-stype = text-055.
+  ls_ftpost-count = lv_count.
+  ls_ftpost-fnam  = text-031. "Profit Center
+  APPEND ls_ftpost TO gt_ftpost.
+  CLEAR : ls_ftpost.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  FILL_CLEARING_DETAILS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM fill_clearing_details USING lv_sold_to_party
+                                 ls_order_log-zbilling_doc.
+
+  DATA: ls_ftclear    TYPE ftclear.
+  CONSTANTS: lc_koart TYPE t001b-mkoar VALUE 'D',
+             lc_belnr TYPE fld30_f05a  VALUE 'VBELN'.
+
+**for document clearing FM
+  ls_ftclear-agkoa   = lc_koart. "customer
+  ls_ftclear-agkon   = lv_sold_to_party. "Cust acc no
+  ls_ftclear-agbuk   = p_ibukrs. "invoice comp code 6400
+  ls_ftclear-xnops   = abap_true.
+  ls_ftclear-selfd   = lc_belnr. "INVOICE NO FIELD 'BELNR' - doc no
+  ls_ftclear-selvon  = ls_order_log-zbilling_doc.
+  APPEND ls_ftclear TO gt_ftclear.
+  CLEAR : ls_ftclear.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  GET_TAX_DETAILS
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*      -->P_LS_ORDER_LOG_ZSALES_ORDER_NO  text
+*----------------------------------------------------------------------*
+FORM get_tax_details USING    ls_order_log-zsales_order_no
+                     CHANGING ls_order_log-ztax_amt.
+
+  DATA: ls_bapi_view   TYPE          order_view,
+        lt_sales_doc   TYPE TABLE OF sales_key,
+        ls_sales_doc   TYPE          sales_key,
+        ls_order_items TYPE          bapisdit,
+        lt_order_items TYPE TABLE OF bapisdit.
+
+  REFRESH: lt_sales_doc,lt_order_items.
+  ls_sales_doc-vbeln = ls_order_log-zsales_order_no.
+  APPEND ls_sales_doc TO lt_sales_doc.
+  ls_bapi_view-item = abap_true.
+
+  CALL FUNCTION 'BAPISDORDER_GETDETAILEDLIST'
+    EXPORTING
+      i_bapi_view                    = ls_bapi_view
+*     I_MEMORY_READ                  =
+*     I_WITH_HEADER_CONDITIONS       = ' '
+    TABLES
+      sales_documents                = lt_sales_doc
+*     ORDER_HEADERS_OUT              =
+      order_items_out                = lt_order_items
+*     ORDER_SCHEDULES_OUT            =
+*     ORDER_BUSINESS_OUT             =
+*     ORDER_PARTNERS_OUT             =
+*     ORDER_ADDRESS_OUT              =
+*     ORDER_STATUSHEADERS_OUT        =
+*     ORDER_STATUSITEMS_OUT          =
+*     ORDER_CONDITIONS_OUT           =
+*     ORDER_COND_HEAD                =
+*     ORDER_COND_ITEM                =
+*     ORDER_COND_QTY_SCALE           =
+*     ORDER_COND_VAL_SCALE           =
+*     ORDER_CONTRACTS_OUT            =
+*     ORDER_TEXTHEADERS_OUT          =
+*     ORDER_TEXTLINES_OUT            =
+*     ORDER_FLOWS_OUT                =
+*     ORDER_CFGS_CUREFS_OUT          =
+*     ORDER_CFGS_CUCFGS_OUT          =
+*     ORDER_CFGS_CUINS_OUT           =
+*     ORDER_CFGS_CUPRTS_OUT          =
+*     ORDER_CFGS_CUVALS_OUT          =
+*     ORDER_CFGS_CUBLBS_OUT          =
+*     ORDER_CFGS_CUVKS_OUT           =
+*     ORDER_BILLINGPLANS_OUT         =
+*     ORDER_BILLINGDATES_OUT         =
+*     ORDER_CREDITCARDS_OUT          =
+*     EXTENSIONOUT                   =
+            .
+  LOOP AT lt_order_items INTO ls_order_items.
+    ls_order_log-ztax_amt = ls_order_items-subtot_pp4 +
+                            ls_order_log-ztax_amt.
+    CLEAR:ls_order_items.
+  ENDLOOP.
+  CLEAR:ls_sales_doc,ls_bapi_view.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  READ_FILE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+*  -->  p1        text
+*  <--  p2        text
+*----------------------------------------------------------------------*
+FORM read_file .
+
+  DATA: lt_file      TYPE STANDARD TABLE OF tab512,
+        ls_file      TYPE tab512,
+        lv_string    TYPE string,
+        ls_input     TYPE ty_input.
+  "for horizontal tab
+  CONSTANTS:lv_tab TYPE c VALUE cl_abap_char_utilities=>horizontal_tab.
+
+*read the input file
+  OPEN DATASET p_appfil FOR INPUT IN TEXT  MODE ENCODING DEFAULT.
+  IF sy-subrc = 0.
+    DO.
+      READ DATASET p_appfil INTO ls_file.
+      IF sy-subrc <> 0.
+        EXIT.
+      ENDIF.
+      APPEND ls_file TO lt_file.
+    ENDDO.
+    CLOSE DATASET p_appfil.
+
+  ELSE.
+** Write failure message in the log
+    MESSAGE s000(zs) WITH text-029 DISPLAY LIKE gc_e.
+  ENDIF.
+
+  IF lt_file IS NOT INITIAL.
+*Remove the header lines
+    DELETE lt_file INDEX 1.
+    DELETE lt_file INDEX 1.
+    REFRESH: gt_input.
+
+    LOOP AT lt_file INTO ls_file.
+
+      lv_string = ls_file.
+  SHIFT lv_string RIGHT DELETING TRAILING cl_abap_char_utilities=>cr_lf.
+      SHIFT lv_string LEFT DELETING LEADING space.
+
+      IF lv_string IS NOT INITIAL.
+        SPLIT lv_string AT lv_tab INTO
+        ls_input-indicator
+        ls_input-sgrp_matnr
+        ls_input-sold_quan
+        ls_input-first_rate
+        ls_input-last_text
+        ls_input-street_dcha
+        ls_input-city
+        ls_input-post_code
+        ls_input-tel
+        ls_input-custpo
+        ls_input-cuspayref.
+        APPEND ls_input TO gt_input.
+      ENDIF.
+
+      CLEAR:ls_file,ls_input.
+    ENDLOOP.
+  ENDIF.
+
+ENDFORM.
