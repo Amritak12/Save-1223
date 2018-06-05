@@ -1,0 +1,1257 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZHRR_EMPLOYEE_EXTRACT_FORM01
+*&---------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*  Program Name: ZHRR_EMPLOYEE_EXTRACT                                 *
+*  Program Title: Report - Employee Full Extract                       *
+*  Author: KURUVAIA                                                    *
+*  R/3 Release:  ECC 7.4                                               *
+*  Technical Script:                                                   *
+*  Transport Request: DE5K915498                                       *
+*----------------------------------------------------------------------*
+*  Type of program: Interface                                          *
+*& The business requirement of this report is to fetch all employee    *
+*  related data and display it in ALV format. This is further being    *
+*  called in FM and used for integration with Mulesoft to send outbound*
+*  files to different downstream systems                               *
+*                                                                      *
+*  NB: If you change the functionality of this program, please         *
+*      update the on-line documentation and the specification.         *
+*      Every Version in the Version Management must have a             *
+*      corresponding entry in the Modification History.                *
+*======================================================================*
+* MODIFICATION HISTORY                                                 *
+* DATE        USER ID(NAME)    REQUEST        DESCRIPTION OF CHANGE    *
+*                                                                      *
+*======================================================================*
+*&---------------------------------------------------------------------*
+*&      Form  ZGET_TEXT_DATA
+*&---------------------------------------------------------------------*
+*       Get descriptions/texts
+*----------------------------------------------------------------------*
+FORM zget_text_data.
+
+*--Update dates
+  IF pnpbegda IS INITIAL.
+    pnpbegda = sy-datum.
+  ENDIF.
+
+  IF pnpendda IS INITIAL.
+    pnpendda = '99991231'.
+  ENDIF.
+
+  IF pn-begda IS INITIAL.
+    pn-begda = sy-datum.
+  ENDIF.
+
+  IF pn-endda IS INITIAL.
+    pn-endda = '99991231'.
+  ENDIF.
+
+*--Fetch the Employment Status text
+  SELECT *
+    FROM t529u
+    INTO TABLE gt_empst
+   WHERE sprsl = gc_e
+     AND statn = gc_2.
+
+  SORT gt_empst.
+
+*--Fetch the position texts
+  SELECT objid
+         stext
+    FROM hrp1000
+    INTO TABLE gt_postxt
+   WHERE plvar EQ gc_01
+     AND otype EQ gc_s
+     AND begda LE pn-endda
+     AND endda GE pn-begda
+     AND langu EQ gc_en.
+
+  SORT gt_postxt.
+
+*--Fetch the Org Unit Texts
+  SELECT objid
+         stext
+    FROM hrp1000
+    INTO TABLE gt_orgtxt
+   WHERE plvar EQ gc_01
+     AND otype EQ gc_o
+     AND begda LE pn-endda
+     AND endda GE pn-begda
+     AND langu EQ gc_en.
+
+  SORT gt_orgtxt.
+
+*--Fetch the Position Pay scale details
+  SELECT objid
+         trfar
+         trfgb
+         trfkz
+         trfg1
+         trfg2
+         trfs1
+         trfs2
+    FROM hrp1005
+    INTO TABLE gt_paysc
+   WHERE plvar EQ gc_01
+     AND otype EQ gc_s
+     AND begda LE pn-endda
+     AND endda GE pn-begda.
+
+  SORT gt_paysc.
+
+*--Fetch the Building Codes
+  SELECT objid
+         build
+    FROM hrp1028
+    INTO TABLE gt_building
+   WHERE plvar EQ gc_01
+     AND otype EQ gc_s
+     AND begda LE pn-endda
+     AND endda GE pn-begda.
+
+  SORT gt_building.
+
+*--Fetch Building Text
+  SELECT build
+         stext
+    FROM t777a
+    INTO TABLE gt_build
+     FOR ALL ENTRIES IN gt_building
+   WHERE build = gt_building-build.
+
+  SORT gt_build.
+
+*--Fetch employee group description
+  SELECT persg
+         ptext
+    FROM t501t
+    INTO TABLE gt_persg
+   WHERE sprsl = gc_e.
+
+  SORT gt_persg.
+
+*--Fetch employee subgroup description
+  SELECT persk
+         ptext
+    FROM t503t
+    INTO TABLE gt_persk
+   WHERE sprsl = gc_e.
+
+  SORT gt_persk.
+
+*--Fetch Company Code description
+  SELECT bukrs
+         butxt
+    FROM t001
+    INTO TABLE gt_bukrs.
+
+  SORT gt_bukrs.
+
+*--Fetch Cost Centre description
+  SELECT kostl
+         ltext
+    FROM cskt
+    INTO TABLE gt_costc.
+
+  SORT gt_costc.
+
+*--Fetch data from T522T
+  SELECT *
+    FROM t522t
+    INTO TABLE gt_faddr
+   WHERE sprsl EQ gc_e.
+
+  SORT gt_faddr.
+
+*--Fetch the Personnel Area Descripton
+  SELECT persa
+         bukrs
+         name1
+    FROM T500P
+    INTO TABLE gt_t500p
+   WHERE molga EQ gc_13.
+
+   SORT gt_t500p.
+
+*--Fetch the Personnel Subarea Descripton
+  SELECT werks
+         btrtl
+         btext
+    FROM T001P
+    INTO TABLE gt_t001p
+   WHERE molga EQ gc_13.
+
+   SORT gt_t001p.
+
+*--Fetch the Pay Scale Type Description
+   SELECT *
+     FROM t510A
+     INTO TABLE gt_t510a
+    WHERE molga EQ gc_13.
+
+   SORT gt_t510a.
+
+*--Fetch the Pay Grade Area Descripton
+   SELECT *
+     FROM t510G
+     INTO TABLE gt_t510g
+    WHERE molga EQ gc_13.
+
+   SORT gt_t510g.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFILL_EMPLOYEE_DATA
+*&---------------------------------------------------------------------*
+*       Fill in the employee related information
+*----------------------------------------------------------------------*
+FORM zfill_employee_data .
+
+  DATA: lw_branch TYPE snodetext,
+        lw_bukrs  TYPE ty_t001,
+        lw_empst  TYPE t529u,
+        lw_postxt TYPE ty_text,
+        lw_orgtxt TYPE ty_text,
+        lw_build  TYPE ty_t777a,
+        lw_costc  TYPE ty_cskt,
+        lw_t500p  TYPE ty_t500p,
+        lw_t001p  TYPE ty_t001p,
+        lw_t510a  TYPE t510a,
+        lw_t510g  TYPE t510g,
+        lw_persg  TYPE ty_persg,
+        lw_persk  TYPE ty_persk,
+        lw_building TYPE ty_building,
+        lv_handler  TYPE REF TO if_hrpa_message_handler,
+        lv_bool     TYPE boole_d,
+        lw_paysc    TYPE ty_paysc,
+        lv_domval   TYPE dd07v-domvalue_l,
+        lv_gender   TYPE dd07v-ddtext,
+        lw_faddr    TYPE t522t,
+        lt_hdakey   TYPE TABLE OF bapipakey,
+        lw_hdakey   TYPE bapipakey,
+        lt_struc    TYPE TABLE OF struc,
+        lw_struc    TYPE struc,
+        lv_struc    TYPE i,
+        lv_index    TYPE sy-tabix,
+        lv_brindx   TYPE sy-index.
+
+**--Check if it's an active employee
+*  CHECK pernr-stat2 EQ gc_3.
+
+*--Employee ID
+  gw_final-emp_id = pernr-pernr.
+
+*--Employee Begin Date
+  CALL FUNCTION 'HR_ECM_GET_HIRE_DATE'
+    EXPORTING
+      pernr              = pernr-pernr
+      selection_end_date = gc_endda
+      message_handler    = lv_handler
+    IMPORTING
+      hire_date          = gw_final-begdat
+      is_ok              = lv_bool.
+
+*--Employee End date
+  rp-provide-from-last p0000 space sy-datum sy-datum.
+  IF pnp-sw-found EQ '1'.
+    gw_final-enddat = p0000-endda.
+  ENDIF.
+
+*--Employment status
+  CLEAR: lw_empst.
+  READ TABLE gt_empst INTO lw_empst
+                   WITH KEY statv = pernr-stat2.
+  IF sy-subrc IS INITIAL.
+    gw_final-emp_status = lw_empst-text1.
+  ENDIF.
+
+*--Occupancy Status
+  CALL FUNCTION 'HR_HDA_GETLIST_PBS'
+    EXPORTING
+      employeenumber        = pernr-pernr
+     timeintervallow        = pn-begda
+     timeintervalhigh       = pn-endda
+    TABLES
+      hdakey                 = lt_hdakey.
+  IF NOT lt_hdakey[] IS INITIAL.
+    gw_final-occu_status = gc_a. "Acting
+  ELSE.
+    gw_final-occu_status = gc_n. "Substantive
+  ENDIF.
+
+*--Company Code
+  gw_final-comp_code = pernr-bukrs.
+
+*--Company Code Description
+  CLEAR: lw_bukrs.
+  READ TABLE gt_bukrs INTO lw_bukrs
+                  WITH KEY bukrs = pernr-bukrs.
+  IF sy-subrc IS INITIAL.
+    gw_final-comp_desc = lw_bukrs-butxt.
+  ENDIF.
+
+*--Personal Area
+  gw_final-pers_area = pernr-werks.
+
+*--Personnel Area Text
+  CLEAR: lw_t500p.
+  READ TABLE gt_t500p INTO lw_t500p
+                  WITH KEY persa = pernr-werks
+                           bukrs = pernr-bukrs.
+  IF sy-subrc IS INITIAL.
+    gw_final-pers_areades = lw_t500p-name1.
+  ENDIF.
+
+*--Personal Subarea
+  gw_final-pers_sarea = pernr-btrtl.
+
+*--Personnel Subarea Text
+  CLEAR: lw_t001p.
+  READ TABLE gt_t001p INTO lw_t001p
+                  WITH KEY werks = pernr-werks
+                           btrtl = pernr-btrtl.
+  IF sy-subrc IS INITIAL.
+    gw_final-pers_sareades = lw_t001p-btext.
+  ENDIF.
+
+*--Employee Group
+  gw_final-emp_group = pernr-persg.
+
+*--Employee Group Description
+  CLEAR: lw_persg.
+  READ TABLE gt_persg INTO lw_persg
+                  WITH KEY persg = pernr-persg.
+  IF sy-subrc IS INITIAL.
+    gw_final-emp_grp_desc = lw_persg-ptext.
+  ENDIF.
+
+*--Employee Subgroup
+  gw_final-emp_sgroup = pernr-persk.
+
+*--Employee Subgroup Description
+  CLEAR: lw_persk.
+  READ TABLE gt_persk INTO lw_persk
+                  WITH KEY persk = pernr-persk.
+  IF sy-subrc IS INITIAL.
+    gw_final-emp_sgrp_desc = lw_persk-ptext.
+  ENDIF.
+
+*--Cost Centre
+  gw_final-cost_centre = pernr-kostl.
+
+*--Cost Centre description
+  CLEAR: lw_costc.
+  READ TABLE gt_costc INTO lw_costc
+                  WITH KEY kostl = pernr-kostl.
+  IF sy-subrc IS INITIAL.
+    gw_final-cost_desc = lw_costc-ltext.
+  ENDIF.
+
+*--Organizational Unit
+  gw_final-org_unit = pernr-orgeh.
+
+*--Org Unit Description
+  CLEAR: lw_orgtxt.
+  READ TABLE gt_orgtxt INTO lw_orgtxt
+                   WITH KEY objid = pernr-orgeh.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_desc = lw_orgtxt-stext.
+  ENDIF.
+
+*--Fetch the branch details for the org unit.
+  CALL FUNCTION 'RH_BRANCH_GET'
+    EXPORTING
+     root_plvar             = gc_01
+     root_otype             = 'O'
+     root_objid             = pernr-orgeh
+     act_wegid              = 'A002'
+     act_level              = 1
+     act_svect              = '1'
+     act_tdepth             = 10
+     act_begda              = pnpbegda
+     act_endda              = pnpendda
+    TABLES
+      node_tab               = gt_branch.
+
+  SORT gt_branch BY tlevel DESCENDING.
+
+  CLEAR: lv_brindx.
+
+  lv_brindx = 1.
+
+  CLEAR: lw_branch.
+  LOOP AT gt_branch INTO lw_branch.
+    lv_index = sy-tabix.
+    READ TABLE s_toporg TRANSPORTING NO FIELDS
+                       WITH KEY low = lw_branch-name+3(8).
+    IF sy-subrc IS INITIAL.
+      DELETE gt_branch INDEX lv_index.
+      CLEAR: lw_branch.
+    ENDIF.
+  ENDLOOP.
+
+*--Organizational Unit - 1
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                       INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit1 = lw_branch-name+3(8).
+*--Organizational Unit - 1 description
+    gw_final-org_desc1 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit1 = gw_final-org_unit.
+    gw_final-org_desc1 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 2
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit2 = lw_branch-name+3(8).
+*--Organizational Unit - 2 description
+    gw_final-org_desc2 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit2 = gw_final-org_unit.
+    gw_final-org_desc2 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 3
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit3 = lw_branch-name+3(8).
+*--Organizational Unit - 3 description
+    gw_final-org_desc3 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit3 = gw_final-org_unit.
+    gw_final-org_desc3 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 4
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit4 = lw_branch-name+3(8).
+*--Organizational Unit - 4 description
+    gw_final-org_desc4 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit4 = gw_final-org_unit.
+    gw_final-org_desc4 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 5
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit5 = lw_branch-name+3(8).
+*--Organizational Unit - 5 description
+    gw_final-org_desc5 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit5 = gw_final-org_unit.
+    gw_final-org_desc5 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 6
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit6 = lw_branch-name+3(8).
+*--Organizational Unit - 2 description
+    gw_final-org_desc6 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit6 = gw_final-org_unit.
+    gw_final-org_desc6 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 7
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit7 = lw_branch-name+3(8).
+*--Organizational Unit - 7 description
+    gw_final-org_desc7 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit7 = gw_final-org_unit.
+    gw_final-org_desc7 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 8
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit8 = lw_branch-name+3(8).
+*--Organizational Unit - 8 description
+    gw_final-org_desc8 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit8 = gw_final-org_unit.
+    gw_final-org_desc8 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 9
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit9 = lw_branch-name+3(8).
+*--Organizational Unit - 9 description
+    gw_final-org_desc9 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit9 = gw_final-org_unit.
+    gw_final-org_desc9 = gw_final-org_desc.
+  ENDIF.
+
+*--Organizational Unit - 10
+  lv_brindx = lv_brindx + 1.
+
+  CLEAR: lw_branch.
+  READ TABLE gt_branch INTO lw_branch
+                      INDEX lv_brindx.
+  IF sy-subrc IS INITIAL.
+    gw_final-org_unit10 = lw_branch-name+3(8).
+*--Organizational Unit - 10 description
+    gw_final-org_desc10 = lw_branch-text.
+  ELSE.
+    gw_final-org_unit10 = gw_final-org_unit.
+    gw_final-org_desc10 = gw_final-org_desc.
+  ENDIF.
+
+  CLEAR: lv_brindx.
+
+*--Position ID
+  gw_final-pos_id = pernr-plans.
+
+*--Position Description
+  CLEAR: lw_postxt.
+  READ TABLE gt_postxt INTO lw_postxt
+                   WITH KEY objid = pernr-plans.
+  IF sy-subrc IS INITIAL.
+    gw_final-pos_desc = lw_postxt-stext.
+  ENDIF.
+
+  IF NOT lt_hdakey IS INITIAL.
+
+    SORT lt_hdakey BY validend DESCENDING.
+
+    CLEAR: lw_hdakey.
+    READ TABLE lt_hdakey INTO lw_hdakey INDEX 1.
+    IF sy-subrc IS INITIAL.
+*--Position Begin Date
+      gw_final-pos_begda = lw_hdakey-validbegin.
+
+*--Position End Date
+      gw_final-pos_endda = lw_hdakey-validend.
+    ENDIF.
+
+  ELSE.
+
+    rp-provide-from-last p0001 space pn-begda pn-endda.
+    IF pnp-sw-found EQ '1'.
+*--Position Begin Date
+      gw_final-pos_begda = p0001-begda.
+
+*--Position End Date
+      gw_final-pos_endda = p0001-endda.
+    ENDIF.
+
+  ENDIF.
+
+*--Position Pay Scale details
+  READ TABLE gt_paysc INTO lw_paysc
+                  WITH KEY objid = pernr-plans.
+  IF sy-subrc IS INITIAL.
+*--Position Pay scale Type
+    gw_final-pos_pstype = lw_paysc-trfar.
+
+*--Pay Scale Type Description
+    CLEAR: lw_t510a.
+    READ TABLE gt_t510a INTO lw_t510a
+                    WITH KEY trfar = lw_paysc-trfar.
+    IF sy-subrc IS INITIAL.
+      gw_final-pos_psdesc = lw_t510a-tartx.
+    ENDIF.
+
+*--Position Pay Scale Grade
+    gw_final-pos_grade = lw_paysc-trfgb.
+
+*--Pay Scale Grade Description
+    CLEAR: lw_t510g.
+    READ TABLE gt_t510g INTO lw_t510g
+                    WITH KEY trfgb = lw_paysc-trfgb.
+    IF sy-subrc IS INITIAL.
+      gw_final-pos_gradesc = lw_t510g-tgbtx.
+    ENDIF.
+
+*--Position Pay Scale Group Min
+    gw_final-pos_pgmin = lw_paysc-trfg1.
+
+*--Position Pay Scale Group Max
+    gw_final-pos_pgmax = lw_paysc-trfg2.
+
+*--Position Pay Scale Level Min
+    gw_final-pos_psmin = lw_paysc-trfs1.
+
+*--Position Pay Scale Level Max
+    gw_final-pos_psmax = lw_paysc-trfs2.
+
+  ENDIF.
+
+*--Controlling Area
+  gw_final-cont_area = pernr-kokrs.
+
+  rp-provide-from-last p0002 space pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+*--Last Name
+    gw_final-last_name = p0002-nachn.
+
+*--First Name
+    gw_final-first_name = p0002-vorna.
+
+*--Title to be addressed
+    gw_final-title = p0002-titel.
+
+*--Form Address
+    CLEAR: lw_faddr.
+    READ TABLE gt_faddr INTO lw_faddr
+                    WITH KEY anred = p0002-anred.
+    IF sy-subrc IS INITIAL.
+      gw_final-form_addr = lw_faddr-atext.
+    ENDIF.
+
+*--Gender
+    lv_domval = p0002-gesch.
+
+    CALL FUNCTION 'DOMAIN_VALUE_GET'
+      EXPORTING
+        i_domname        = 'GESCH'
+        i_domvalue       = lv_domval
+     IMPORTING
+       e_ddtext         = lv_gender
+     EXCEPTIONS
+       not_exist        = 1
+       OTHERS           = 2
+              .
+    IF sy-subrc IS INITIAL.
+      gw_final-gender = lv_gender.
+    ENDIF.
+
+*--Date of Birth
+    gw_final-date_birth = p0002-gbdat.
+
+*--Nationality
+    gw_final-nationality = p0002-natio.
+
+*--Marital Status
+    gw_final-marital_st = p0002-famst.
+  ENDIF.
+
+  rp-provide-from-last p0006 '1' pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+*--Street House no(subtype 1)
+    gw_final-street_hno1 = p0006-stras.
+
+*--Address Line(subtype 1)
+    gw_final-address_line1 = p0006-locat.
+
+*--City(subtype 1)
+    gw_final-city1 = p0006-ort01.
+
+*--Region(subtype 1)
+    gw_final-region1 = p0006-state.
+
+*--PO Code(subtype 1)
+    gw_final-po_code1 = p0006-pstlz.
+
+*--Telephone number
+    gw_final-tel_no = p0006-telnr.
+
+*--Mobile Phone
+    IF NOT p0006-num01 IS INITIAL.
+      gw_final-mobile_phone = p0006-num01.
+    ELSE.
+      gw_final-mobile_phone = p0006-num02.
+    ENDIF.
+  ENDIF.
+
+  rp-provide-from-last p0006 '2' pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+*--Street House no(subtype 2)
+    gw_final-street_hno2 = p0006-stras.
+
+*--Address Line(subtype 2)
+    gw_final-address_line2 = p0006-locat.
+
+*--City(subtype 2)
+    gw_final-city2 = p0006-ort01.
+
+*--Region(subtype 2)
+    gw_final-region2 = p0006-state.
+
+*--PO Code(subtype 2)
+    gw_final-po_code2 = p0006-pstlz.
+  ENDIF.
+
+*--Work Phone
+  rp-provide-from-last p0006 '3' pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+    gw_final-work_phone = p0006-telnr.
+  ENDIF.
+
+*--User ID
+  rp-provide-from-last p0105 '9002' pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+    gw_final-user_id = p0105-usrid.
+  ELSE.
+    rp-provide-from-last p0105 '0001' pn-begda pn-endda.
+    IF pnp-sw-found EQ '1'.
+      gw_final-user_id = p0105-usrid.
+    ENDIF.
+  ENDIF.
+
+*--Email ID
+  rp-provide-from-last p0105 '0010' pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+    gw_final-email_id = p0105-usrid_long.
+  ENDIF.
+
+*--Employee Category
+*  gw_final-emp_category = p0105-usrid_long.
+
+*--Working Hours
+  rp-provide-from-last p0007 space pn-begda pn-endda.
+  IF pnp-sw-found EQ '1'.
+*--Weekly Hours
+    gw_final-week_hours = p0007-wostd.
+
+*--Employee Day Hours per week
+    gw_final-day_hours = p0007-wkwdy.
+  ENDIF.
+
+*--Building Code
+  CLEAR: lw_building.
+  READ TABLE gt_building INTO lw_building
+                     WITH KEY objid = pernr-plans.
+  IF sy-subrc IS INITIAL.
+    gw_final-bldg_code = lw_building-build.
+  ENDIF.
+
+*--Building Description
+  CLEAR: lw_build.
+  READ TABLE gt_build INTO lw_build
+                   WITH KEY build = gw_final-bldg_code.
+  IF sy-subrc IS INITIAL.
+    gw_final-bldg_desc = lw_build-stext.
+  ENDIF.
+
+*--Get the manager details.
+  PERFORM zmanager_details.
+
+  APPEND gw_final TO gt_final.
+  CLEAR: gw_final.
+  REFRESH: gt_branch.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZMANAGER_DETAILS
+*&---------------------------------------------------------------------*
+*       Fill in the reporting manager details
+*----------------------------------------------------------------------*
+FORM zmanager_details .
+
+  DATA: lo_read_infotype   TYPE REF TO if_hrpa_read_infotype,
+        lo_infty_buffer    TYPE hrbas_infty_buffer_if_ref,
+        lo_read_pdinfotype TYPE REF TO cl_hrbas_bl_read_infotype,
+        message_handler    TYPE hrbas_msg_handler_if_ref,
+        lt_p1001           TYPE STANDARD TABLE OF p1001,
+        lw_p1001           TYPE p1001,
+        lt_p0001           TYPE STANDARD TABLE OF p0001,
+        lw_p0001           TYPE p0001,
+        data_exists        TYPE boole_d,
+        lv_chief           TYPE plans,
+        lv_holder          TYPE pernr_d,
+        lv_orgeh           TYPE orgeh,
+        lv_plans           TYPE plans,
+        lv_go_up           TYPE boole_d,
+        lv_end_processing  TYPE boole_d,
+        lv_root_node       TYPE orgeh,
+        lv_pernr           TYPE prelp-pernr,
+        lt_p0105           TYPE TABLE OF p0105,
+        lw_p0105           TYPE p0105,
+        lv_persg           TYPE p0001-persg,
+        lv_onup            TYPE i,
+        lw_objec           TYPE objec,
+        lw_postxt          TYPE ty_text.
+
+
+  lv_orgeh = pernr-orgeh.
+  lv_plans = pernr-plans.
+
+  CLEAR: lv_go_up, lv_onup.
+
+*--Initiate the infotype framework
+*--CREATE an instance OF the BUFFER
+  CALL METHOD cl_hrbas_rhombuffer=>get_instance
+    IMPORTING
+      infty_buffer = lo_infty_buffer.
+
+*--Create object of cl_hrbas_bl_read_infotype for reading infotype
+  CREATE OBJECT lo_read_pdinfotype
+    EXPORTING
+      infty_buffer = lo_infty_buffer.
+
+  TRY.
+      DO.
+*--Look for chief position of this org unit
+        CLEAR: lt_p1001.
+        REFRESH: lt_p1001.
+        CALL METHOD lo_read_pdinfotype->read
+          EXPORTING
+            plvar              = cl_hrpiq00const=>c_plvar_active
+            otype              = cl_hrpiq00const=>c_otype_o
+            objid              = lv_orgeh
+            subty              = 'B012'   " manages...
+            istat              = cl_hrpiq00const=>c_istat_active
+            infty              = cl_hrpiq00const=>c_infty_1001
+            begda              = pnpbegda
+            endda              = pnpendda
+            no_auth_check      = 'X'
+            bl_message_handler = message_handler
+          IMPORTING
+            pnnnn_tab          = lt_p1001
+            data_exists        = data_exists.
+
+        IF data_exists =  cl_hrpiq00const=>c_bool_yes.
+          CLEAR data_exists.
+          READ TABLE lt_p1001 INTO lw_p1001 INDEX 1.
+          lv_chief = lw_p1001-sobid.
+        ENDIF.
+
+        IF NOT lv_chief IS INITIAL.
+*         First check if the chief position id is the same id
+*         that is being processed
+          IF lv_chief = lv_plans.
+            lv_go_up = abap_true.
+          ELSE.
+* Look for the holder of this chief position - no need to check HDA as
+* per business requirements.
+            CLEAR lt_p1001.
+            REFRESH lt_p1001.
+            CALL METHOD lo_read_pdinfotype->read
+              EXPORTING
+                plvar              = cl_hrpiq00const=>c_plvar_active
+                otype              = cl_hrpiq00const=>c_otype_s
+                objid              = lv_chief
+                subty              = 'A008'   " holder...
+                istat              = cl_hrpiq00const=>c_istat_active
+                infty              = cl_hrpiq00const=>c_infty_1001
+                begda              = pnpbegda
+                endda              = pnpendda
+                no_auth_check      = 'X'
+                bl_message_handler = message_handler
+              IMPORTING
+                pnnnn_tab          = lt_p1001
+                data_exists        = data_exists.
+
+            IF data_exists =  cl_hrpiq00const=>c_bool_yes.
+              CLEAR data_exists.
+              READ TABLE lt_p1001 INTO lw_p1001 INDEX 1.
+              lv_holder = lw_p1001-sobid.
+*           Check if the holder is the employee being processed
+              IF lv_holder = pernr-pernr.
+                lv_go_up = abap_true.
+              ELSE.
+                gw_final-mngr_id  = lv_holder.  "chief position
+                gw_final-mngr_pos = lv_chief. "chief position
+                lv_end_processing = abap_true.
+              ENDIF.
+            ELSE.
+*-Check for HDA
+*              PERFORM zget_struc USING gc_s lw_p1001-sobid
+*                                       gc_81 gc_01.
+*              IF sy-subrc = 0.
+*                READ TABLE gt_objec INTO lw_objec WITH KEY otype =
+*gc_p.
+*                IF sy-subrc = 0.
+*                  lv_holder = lw_objec-objid."pernr
+**           Check if the holder is the employee being processed
+*                  gw_final-mngr_id  = lv_holder.  "chief POSITION
+*                  gw_final-mngr_pos = lw_p1001-sobid.   "chief POSITION
+*                  lv_end_processing = abap_true.
+*                ENDIF.
+              CLEAR lt_p1001.
+              REFRESH lt_p1001.
+              CALL METHOD lo_read_pdinfotype->read
+                EXPORTING
+                  plvar              = cl_hrpiq00const=>c_plvar_active
+                  otype              = cl_hrpiq00const=>c_otype_s
+                  objid              = lv_chief
+                  subty              = 'A081'   " HDA...
+                  istat              = cl_hrpiq00const=>c_istat_active
+                  infty              = cl_hrpiq00const=>c_infty_1001
+                  begda              = pnpbegda
+                  endda              = pnpbegda
+                  no_auth_check      = 'X'
+                  bl_message_handler = message_handler
+                IMPORTING
+                  pnnnn_tab          = lt_p1001
+                  data_exists        = data_exists.
+
+              IF data_exists =  cl_hrpiq00const=>c_bool_yes.
+                CLEAR data_exists.
+                READ TABLE lt_p1001 INTO lw_p1001 INDEX 1.
+                lv_holder = lw_p1001-sobid.
+*           Check if the holder is the employee being processed
+                IF lv_holder = pernr-pernr.
+                  lv_go_up = abap_true.
+                ELSE.
+                  gw_final-mngr_id  = lv_holder.  "chief position
+                  gw_final-mngr_pos = lv_chief. "chief position
+                  lv_end_processing = abap_true.
+                ENDIF.
+
+              ELSE.
+*           This position is vacant - no need to look any further
+*           position return but with empty holder details.
+*           Check for higher level when one up manager is selected.
+                lv_onup = lv_onup + 1.
+                IF p_onup  EQ abap_true AND
+                   lv_onup LE p_mlevel.
+                  lv_go_up = abap_true.
+                ELSE.
+                  gw_final-mngr_pos = lv_chief.   "chief POSITION i
+                  lv_end_processing = abap_true.
+                ENDIF.
+              ENDIF.
+            ENDIF.
+          ENDIF.
+        ELSE.
+*         No chief position was found - go up to the next org unit
+          lv_go_up = abap_true.
+        ENDIF.
+
+
+        IF lv_go_up = abap_true.
+          CLEAR: lv_go_up.
+          CLEAR lt_p1001. REFRESH lt_p1001.
+          CALL METHOD lo_read_pdinfotype->read
+            EXPORTING
+              plvar              = cl_hrpiq00const=>c_plvar_active
+              otype              = cl_hrpiq00const=>c_otype_o
+              objid              = lv_orgeh
+              subty              = 'A002'   " reports to.....
+              istat              = cl_hrpiq00const=>c_istat_active
+              infty              = cl_hrpiq00const=>c_infty_1001
+              begda              = pnpbegda
+              endda              = pnpendda
+              no_auth_check      = 'X'
+              bl_message_handler = message_handler
+            IMPORTING
+              pnnnn_tab          = lt_p1001
+              data_exists        = data_exists.
+
+          IF data_exists =  cl_hrpiq00const=>c_bool_yes.
+            CLEAR data_exists.
+            READ TABLE lt_p1001 INTO lw_p1001 INDEX 1.
+            lv_orgeh = lw_p1001-sobid.
+          ELSE.
+*           No org unit found
+            lv_end_processing  = abap_true.
+          ENDIF.
+        ENDIF.
+
+*       If manager has been found exit or root node reached
+        IF lv_end_processing  = abap_true.
+          EXIT.
+        ENDIF.
+      ENDDO.
+
+    CATCH cx_root.
+  ENDTRY.
+
+*--Manager Position Description
+  IF NOT gw_final-mngr_pos IS INITIAL.
+    CLEAR: lw_postxt.
+    READ TABLE gt_postxt INTO lw_postxt
+                     WITH KEY objid = gw_final-mngr_pos.
+    IF sy-subrc IS INITIAL.
+      gw_final-mngr_posdes = lw_postxt-stext.
+    ENDIF.
+  ENDIF.
+
+
+* Read chief position holder name
+  IF NOT gw_final-mngr_id IS INITIAL.
+    lv_pernr = gw_final-mngr_id.
+*--Read chief position holder name
+    CALL FUNCTION 'HR_READ_INFOTYPE'
+      EXPORTING
+       tclas                 = 'A'
+        pernr                 = lv_pernr
+        infty                 = '0001'
+       begda                 = pnpbegda
+       endda                 = pnpendda
+      TABLES
+        infty_tab             = lt_p0001
+     EXCEPTIONS
+       infty_not_found       = 1
+       OTHERS                = 2
+              .
+    IF sy-subrc IS INITIAL.
+      CLEAR: lw_p0001.
+      READ TABLE lt_p0001 INTO lw_p0001 INDEX 1.
+      IF sy-subrc IS INITIAL.
+        gw_final-mngr_name = lw_p0001-ename.
+      ENDIF.
+    ENDIF.
+
+    CALL FUNCTION 'HR_READ_INFOTYPE'
+      EXPORTING
+       pernr                 = lv_pernr
+       infty                 = '0105'
+       begda                 = pnpbegda
+       endda                 = pnpendda
+      TABLES
+        infty_tab             = lt_p0105
+     EXCEPTIONS
+       infty_not_found       = 1
+       OTHERS                = 2.
+    IF sy-subrc IS INITIAL.
+      CLEAR: lw_p0105.
+      READ TABLE lt_p0105 INTO lw_p0105
+                      WITH KEY subty = '0001'.
+      IF sy-subrc IS INITIAL.
+        gw_final-mngr_usrid = lw_p0105-usrid.
+      ENDIF.
+    ENDIF.
+
+*--Pass the Manager Org Level
+    gw_final-mngr_lvl = lv_onup.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZGET_STRUC
+*&---------------------------------------------------------------------*
+*       Get struc details
+*----------------------------------------------------------------------*
+FORM zget_struc  USING    pv_otype
+                         pv_objid
+                         pv_wegid
+                         pv_plvar.
+
+  REFRESH:gt_objec,gt_struc.
+
+  CALL FUNCTION 'RH_STRUC_GET'
+    EXPORTING
+      act_otype       = pv_otype
+      act_objid       = pv_objid
+      act_wegid       = pv_wegid
+      act_plvar       = pv_plvar
+      act_begda       = pnpbegda
+      act_endda       = pnpendda
+      authority_check = ' '
+    TABLES
+      result_objec    = gt_objec
+      result_struc    = gt_struc
+    EXCEPTIONS
+      no_plvar_found  = 1
+      no_entry_found  = 2
+      OTHERS          = 3.
+
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZDISPLAY_ALV_OUTPUT
+*&---------------------------------------------------------------------*
+*       Display final report
+*----------------------------------------------------------------------*
+FORM zdisplay_alv_output.
+
+  DATA: lw_layout_alv TYPE slis_layout_alv.
+
+  lw_layout_alv-colwidth_optimize = abap_true.
+
+*--Number of Employees.
+  DESCRIBE TABLE gt_final LINES gv_empcount.
+
+*--Export data to memory ID
+  EXPORT gt_final TO MEMORY ID 'ZEMP_DET'.
+
+*--Build Field catalog
+  PERFORM zbuild_field_catalog USING:  text-001  text-063  text-064,
+                                       text-002  text-063  text-065,
+                                       text-003  text-063  text-066,
+                                       text-004  text-063  text-067,
+                                       text-146  text-063  text-147,
+                                       text-005  text-063  text-068,
+                                       text-006  text-063  text-069,
+                                       text-007  text-063  text-070,
+                                       text-168  text-063  text-172,
+                                       text-008  text-063  text-071,
+                                       text-169  text-063  text-173,
+                                       text-009  text-063  text-072,
+                                       text-010  text-063  text-073,
+                                       text-011  text-063  text-074,
+                                       text-012  text-063  text-075,
+                                       text-013  text-063  text-076,
+                                       text-014  text-063  text-077,
+                                       text-015  text-063  text-078,
+                                       text-016  text-063  text-079,
+                                       text-017  text-063  text-080,
+                                       text-018  text-063  text-081,
+                                       text-019  text-063  text-082,
+                                       text-020  text-063  text-083,
+                                       text-021  text-063  text-084,
+                                       text-022  text-063  text-085,
+                                       text-138  text-063  text-142,
+                                       text-139  text-063  text-143,
+                                       text-140  text-063  text-144,
+                                       text-141  text-063  text-145,
+                                       text-148  text-063  text-158,
+                                       text-149  text-063  text-159,
+                                       text-150  text-063  text-160,
+                                       text-151  text-063  text-161,
+                                       text-152  text-063  text-162,
+                                       text-153  text-063  text-163,
+                                       text-154  text-063  text-164,
+                                       text-155  text-063  text-165,
+                                       text-156  text-063  text-166,
+                                       text-157  text-063  text-167,
+                                       text-023  text-063  text-086,
+                                       text-024  text-063  text-087,
+                                       text-025  text-063  text-088,
+                                       text-026  text-063  text-089,
+                                       text-027  text-063  text-090,
+                                       text-170  text-063  text-174,
+                                       text-128  text-063  text-133,
+                                       text-171  text-063  text-175,
+                                       text-129  text-063  text-134,
+                                       text-130  text-063  text-135,
+                                       text-131  text-063  text-136,
+                                       text-132  text-063  text-137,
+                                       text-028  text-063  text-091,
+                                       text-029  text-063  text-092,
+                                       text-030  text-063  text-093,
+                                       text-031  text-063  text-094,
+                                       text-032  text-063  text-095,
+                                       text-033  text-063  text-096,
+                                       text-034  text-063  text-097,
+                                       text-035  text-063  text-098,
+                                       text-036  text-063  text-099,
+                                       text-037  text-063  text-100,
+                                       text-038  text-063  text-101,
+                                       text-039  text-063  text-102,
+                                       text-040  text-063  text-103,
+                                       text-041  text-063  text-104,
+                                       text-042  text-063  text-105,
+                                       text-043  text-063  text-106,
+                                       text-044  text-063  text-107,
+                                       text-045  text-063  text-108,
+                                       text-046  text-063  text-109,
+                                       text-047  text-063  text-110,
+                                       text-048  text-063  text-111,
+                                       text-049  text-063  text-112,
+                                       text-050  text-063  text-113,
+                                       text-051  text-063  text-114,
+                                       text-052  text-063  text-115,
+                                       text-053  text-063  text-116,
+                                       text-054  text-063  text-117,
+                                       text-055  text-063  text-118,
+                                       text-056  text-063  text-119,
+                                       text-057  text-063  text-120,
+                                       text-058  text-063  text-121,
+                                       text-059  text-063  text-122,
+                                       text-060  text-063  text-123,
+                                       text-061  text-063  text-124,
+                                       text-062  text-063  text-125.
+
+*--Use FM to display output in ALV grid
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program     = sy-repid
+      i_callback_top_of_page = 'TOP-OF-PAGE'
+      is_layout              = lw_layout_alv
+      it_fieldcat            = gt_fieldcat
+    TABLES
+      t_outtab               = gt_final
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZBUILD_FIELD_CATALOG
+*&---------------------------------------------------------------------*
+*       Build Field catalog
+*----------------------------------------------------------------------*
+FORM zbuild_field_catalog  USING    p_text1
+                                    p_text2
+                                    p_text3.
+
+  DATA:lw_fieldcat TYPE slis_fieldcat_alv.
+
+  CLEAR: lw_fieldcat.
+
+  lw_fieldcat-fieldname = p_text1.
+  lw_fieldcat-tabname   = p_text2.
+  lw_fieldcat-seltext_m = p_text3.
+
+  APPEND lw_fieldcat TO gt_fieldcat.
+  CLEAR: lw_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TOP-OF-PAGE
+*&---------------------------------------------------------------------*
+*       Header details
+*----------------------------------------------------------------------*
+FORM top-of-page.
+
+  DATA: lt_header TYPE slis_t_listheader,
+        lw_header TYPE slis_listheader.
+
+*--Title
+  lw_header-typ  = gc_h.
+  lw_header-info = text-126.
+  APPEND lw_header TO lt_header.
+  CLEAR lw_header.
+
+*  Number of Employees
+  lw_header-typ  = gc_s.
+  lw_header-info = text-127 && | | && gv_empcount.
+  APPEND lw_header TO lt_header.
+  CLEAR: lw_header.
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_header.
+
+ENDFORM.                    "top-of-page
