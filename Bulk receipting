@@ -1,0 +1,1540 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFIR_BULK_RECEIPT_CUST_FORM01
+*&---------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*  Program Name: ZFIR_BULK_RECEIPTING_CUSTINV                          *
+*  Program Title: Report - Bulk Receipting AR Customer Invoices        *
+*  Author: KURUVAIA                                                    *
+*  R/3 Release:  ECC 7.4                                               *
+*  Technical Script:                                                   *
+*  Transport Request: DE5K915704                                       *
+*----------------------------------------------------------------------*
+*  Type of program: Interface                                          *
+*& The business requirement of this report is to able to bulk receipt  *
+*  the payments against the AR customer invoices being uploaded using  *
+*  an excel file format                                                *
+*                                                                      *
+*  NB: If you change the functionality of this program, please         *
+*      update the on-line documentation and the specification.         *
+*      Every Version in the Version Management must have a             *
+*      corresponding entry in the Modification History.                *
+*======================================================================*
+* MODIFICATION HISTORY                                                 *
+* DATE        USER ID(NAME)    REQUEST        DESCRIPTION OF CHANGE    *
+*                                                                      *
+*======================================================================*
+*&---------------------------------------------------------------------*
+*&      Form  ZSCREEN_BUTTON
+*&---------------------------------------------------------------------*
+*       Add buttons on the selection screen
+*----------------------------------------------------------------------*
+FORM zscreen_button .
+
+  DATA: lw_sel_button TYPE smp_dyntxt.
+
+  CLEAR: lw_sel_button.
+  lw_sel_button-icon_id   = icon_export.
+  lw_sel_button-quickinfo = text-001.
+  lw_sel_button-icon_text = text-002.
+
+  sscrfields-functxt_01   = lw_sel_button.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZDOWNLOAD_TEMPLATE
+*&---------------------------------------------------------------------*
+*       Download the template for bulk receipting
+*----------------------------------------------------------------------*
+FORM zdownload_template .
+
+  DATA: lw_return TYPE bapiret2.
+
+*--Download the file stored in the SAP web repository
+  CALL FUNCTION 'Z_FI_EXPORT_TEMPLATE'
+    EXPORTING
+      p_object_name = gc_object
+    IMPORTING
+      ls_return     = lw_return.
+
+  IF lw_return-type = gc_s.
+    MESSAGE ID lw_return-id
+       TYPE gc_i
+     NUMBER lw_return-number
+       WITH lw_return-message_v1 lw_return-message_v2
+            lw_return-message_v3 lw_return-message_v4.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZGET_FILEPATH
+*&---------------------------------------------------------------------*
+*       Get the filepath
+*----------------------------------------------------------------------*
+FORM zget_filepath .
+
+*--Get the file path when F4 is used
+  CALL FUNCTION 'F4_FILENAME' "F4 for filename
+    EXPORTING
+      program_name  = syst-cprog
+      dynpro_number = syst-dynnr
+    IMPORTING
+      file_name     = p_file.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZSCREEN_OUTPUT
+*&---------------------------------------------------------------------*
+*       Screen output validations
+*----------------------------------------------------------------------*
+FORM zscreen_output .
+
+  LOOP AT SCREEN.
+    IF screen-group1 = 'OBL'.
+      screen-required = '2'.   "<<- default obligatory
+      MODIFY SCREEN.
+    ENDIF.
+    IF p_bukrs IS INITIAL.
+      IF screen-name = 'P_BLART' OR
+         screen-name = 'P_SAKNR'.
+        screen-input = 0.
+        MODIFY SCREEN.
+      ENDIF.
+    ENDIF.
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZSCREEN_VALIDATIONS
+*&---------------------------------------------------------------------*
+*       Screen validations
+*----------------------------------------------------------------------*
+FORM zscreen_validations .
+
+  DATA: lw_test_alv  TYPE ty_test_alv,
+        lt_upl_head  TYPE TABLE OF ty_upl_head,
+        lw_upl_head  TYPE ty_upl_head,
+        lw_upl_file  TYPE ty_upl_file,
+        lw_raw_data  TYPE truxs_t_text_data,
+        lv_path  TYPE rlgrap-filename,
+        lv_type  TYPE char4,
+        lv_gjahr TYPE bkpf-gjahr,
+        lv_monat TYPE bkpf-monat,
+        lv_frpe1 TYPE t001b-frpe1,
+        lv_file  TYPE pcfile-path.
+
+*--Authorisation check
+  AUTHORITY-CHECK OBJECT 'ZFI_JOURN'
+  ID 'ACTVT' FIELD '10'.
+  IF sy-subrc NE 0.
+    lw_test_alv-message = text-011.
+    APPEND lw_test_alv TO gt_test_alv.
+    CLEAR: lw_test_alv.
+  ENDIF.
+
+*authorisation check
+  AUTHORITY-CHECK OBJECT 'F_FAGL_LDR'
+  ID 'BUKRS' FIELD p_bukrs.
+  IF sy-subrc NE 0.
+    MESSAGE 'No authorisation for company code' TYPE 'E'.
+  ENDIF.
+
+*--Validate the Company Code
+  IF NOT p_bukrs IS INITIAL.
+    SELECT bukrs
+           waers
+      FROM t001
+      INTO TABLE gt_t001
+     WHERE bukrs EQ p_bukrs.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE s005(zf) DISPLAY LIKE gc_e
+         WITH text-003 p_bukrs.
+    ENDIF.
+  ENDIF.
+
+*--Validate the Document Type
+  IF NOT p_blart IS INITIAL.
+    SELECT SINGLE blart
+      INTO @DATA(lv_blart)
+      FROM t003
+     WHERE blart EQ @p_blart.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE s005(zf) DISPLAY LIKE gc_e
+         WITH text-004 p_blart.
+*      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+
+*--Validate the Account Number
+  IF NOT p_saknr IS INITIAL.
+    SELECT SINGLE saknr
+      INTO @DATA(lv_saknr)
+      FROM skb1
+     WHERE bukrs EQ @p_bukrs
+       AND saknr EQ @p_saknr.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE s005(zf) DISPLAY LIKE gc_e
+         WITH text-005 p_saknr.
+*      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+
+*--Validate if the posting period is open based on the posting date
+*--and company code
+  CALL FUNCTION 'FI_PERIOD_DETERMINE'
+    EXPORTING
+      i_budat        = p_budat
+      i_bukrs        = p_bukrs
+    IMPORTING
+      e_gjahr        = lv_gjahr
+      e_monat        = lv_monat
+    EXCEPTIONS
+      fiscal_year    = 1
+      period         = 2
+      period_version = 3
+      posting_period = 4
+      special_period = 5
+      version        = 6
+      posting_date   = 7
+      OTHERS         = 8.
+  IF sy-subrc IS INITIAL.
+    lv_frpe1 = lv_monat.
+*--To check if posting period is open, else display an error
+    CALL FUNCTION 'FI_PERIOD_CHECK'
+      EXPORTING
+        i_bukrs          = p_bukrs
+        i_gjahr          = lv_gjahr
+        i_koart          = gc_koart
+        i_monat          = lv_frpe1
+        i_glvor          = gc_glvor
+      EXCEPTIONS
+        error_period     = 1
+        error_period_acc = 2
+        invalid_input    = 3
+        OTHERS           = 4.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE s007(zf) DISPLAY LIKE 'E'
+         WITH lv_monat lv_gjahr.
+*      LEAVE LIST-PROCESSING.
+    ENDIF.
+  ENDIF.
+
+*--Validate the file type being uploaded
+  SPLIT p_file AT gc_dot INTO lv_path lv_type.
+  TRANSLATE lv_type TO UPPER CASE.
+  IF NOT ( lv_type EQ gc_xlsx OR
+           lv_type EQ gc_xls ).
+    MESSAGE s005(zf) DISPLAY LIKE 'E'
+       WITH text-006 lv_type.
+*    LEAVE LIST-PROCESSING.
+  ENDIF.
+
+*--Store the file name
+  CLEAR: lv_file.
+  lv_file = p_file.
+
+  CALL FUNCTION 'PC_SPLIT_COMPLETE_FILENAME'
+    EXPORTING
+      complete_filename       = lv_file
+   IMPORTING
+     name                     = gv_file
+     name_with_ext            = gv_extfile
+   EXCEPTIONS
+     invalid_drive           = 1
+     invalid_extension       = 2
+     invalid_name            = 3
+     invalid_path            = 4
+     OTHERS                  = 5
+            .
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+
+*--Convert the file uploaded to SAP format
+  CALL FUNCTION 'TEXT_CONVERT_XLS_TO_SAP'
+    EXPORTING
+      i_tab_raw_data       = lw_raw_data
+      i_filename           = p_file
+    TABLES
+      i_tab_converted_data = lt_upl_head
+    EXCEPTIONS
+      conversion_failed    = 1
+      OTHERS               = 2.
+  IF sy-subrc IS INITIAL.
+*--Check if the excel sheet format entered is correct
+    CLEAR: lw_upl_head.
+    READ TABLE lt_upl_head INTO lw_upl_head INDEX 1.
+    IF lw_upl_head-pernr CP text-007 AND
+       lw_upl_head-kunnr CP text-008 AND
+       lw_upl_head-amont CP text-009 AND
+       lw_upl_head-invce CP text-010.
+*--Delete the header line after checking for the correct format
+      DELETE TABLE lt_upl_head FROM lw_upl_head.
+      CLEAR: lw_upl_file, lw_upl_head.
+      LOOP AT lt_upl_head INTO lw_upl_head.
+
+        IF lw_upl_file-kunnr IS INITIAL OR
+           lw_upl_file-amont IS INITIAL.
+          MESSAGE s005(zf) DISPLAY LIKE 'E' WITH text-060.
+        ENDIF.
+
+        lw_upl_file-pernr = lw_upl_head-pernr.
+
+        lw_upl_file-kunnr = lw_upl_head-kunnr.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input         = lw_upl_file-kunnr
+         IMPORTING
+           output        = lw_upl_file-kunnr.
+
+        lw_upl_file-amont = lw_upl_head-amont.
+
+        lw_upl_file-invce = lw_upl_head-invce.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input         = lw_upl_file-invce
+         IMPORTING
+           output        = lw_upl_file-invce.
+
+        APPEND lw_upl_file TO gt_upl_file.
+        CLEAR: lw_upl_file.
+      ENDLOOP.
+    ELSE.
+      MESSAGE s005(zf) DISPLAY LIKE 'E' WITH text-012.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFETCH_CUST_DATA
+*&---------------------------------------------------------------------*
+*       Fetch Customer related data
+*----------------------------------------------------------------------*
+FORM zfetch_cust_data .
+
+  DATA: lt_tvarvc TYPE TABLE OF ty_range,
+        lw_tvarvc TYPE ty_range,
+        lt_t052   TYPE TABLE OF ty_t052,
+        lw_t052   TYPE ty_t052,
+        lw_bsid   TYPE ty_bsid,
+        lv_tabix  TYPE sy-tabix.
+
+  RANGES: lr_blart FOR bsid-blart.
+
+*--Get the document types range.
+  SELECT sign
+         opti
+         low
+         high
+    FROM tvarvc
+    INTO TABLE lt_tvarvc
+    WHERE name = gc_blart.
+  IF sy-subrc IS INITIAL.
+    CLEAR: lw_tvarvc.
+    LOOP AT lt_tvarvc INTO lw_tvarvc.
+      lr_blart-sign   = lw_tvarvc-sign.
+      lr_blart-option = lw_tvarvc-opti.
+      lr_blart-low    = lw_tvarvc-low.
+      lr_blart-high   = lw_tvarvc-high.
+      APPEND lr_blart.
+    ENDLOOP.
+  ENDIF.
+
+*--Get the term dates for payment
+  SELECT zterm
+         ztag1
+    FROM t052
+    INTO TABLE lt_t052.
+
+  SORT lt_t052.
+
+*--Get the customer related data - BSID.
+  SELECT a~bukrs
+         a~kunnr
+         a~umskz
+         a~zuonr
+         a~gjahr
+         a~belnr
+         a~bldat
+         a~blart
+         a~dmbtr
+         a~zfbdt
+         a~zterm
+         a~rebzg
+         b~name1
+    INTO TABLE gt_bsid
+    FROM bsid AS a
+   INNER JOIN kna1 AS b
+      ON a~kunnr EQ b~kunnr
+    FOR ALL ENTRIES IN gt_upl_file
+  WHERE a~bukrs EQ p_bukrs
+    AND a~kunnr EQ gt_upl_file-kunnr
+*    AND a~belnr EQ gt_upl_file-invce
+    AND ( a~blart EQ p_blart
+       OR a~blart IN lr_blart )
+    AND a~rebzg EQ space.
+  IF gt_bsid IS NOT INITIAL.
+    SORT gt_bsid.
+  ENDIF.
+
+*--Add the days to the baseline date from BSID based on the payment
+*--terms from T052
+  CLEAR: lw_bsid.
+  LOOP AT gt_bsid INTO lw_bsid.
+    lv_tabix = sy-tabix.
+    CLEAR: lw_t052.
+    READ TABLE lt_t052 INTO lw_t052
+                   WITH KEY zterm = lw_bsid-zterm.
+    IF sy-subrc IS INITIAL.
+      lw_bsid-zfbdt = lw_bsid-zfbdt + lw_t052-ztag1.
+      MODIFY gt_bsid FROM lw_bsid INDEX lv_tabix.
+      CLEAR: lw_bsid, lw_t052, lv_tabix.
+    ENDIF.
+  ENDLOOP.
+
+  SORT gt_bsid BY kunnr zfbdt ASCENDING.
+
+*--Fetch all the partial payments done for the invoice from bsid
+  IF NOT gt_bsid[] IS INITIAL.
+    SELECT bukrs
+           kunnr
+           umskz
+           zuonr
+           gjahr
+           belnr
+           bldat
+           blart
+           dmbtr
+           zfbdt
+           rebzg
+      FROM bsid
+      INTO TABLE gt_partial
+      FOR ALL ENTRIES IN gt_bsid
+     WHERE bukrs EQ gt_bsid-bukrs
+       AND kunnr EQ gt_bsid-kunnr
+       AND blart IN lr_blart
+       AND rebzg EQ gt_bsid-belnr.
+*        OR rebzg NE ' ' ).
+    IF gt_partial IS NOT INITIAL.
+      SORT gt_partial.
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPROCESS_CUST_DATA
+*&---------------------------------------------------------------------*
+*       Process the invoices
+*----------------------------------------------------------------------*
+FORM zprocess_cust_data.
+
+  DATA: lw_t001  TYPE ty_t001,
+        lv_count TYPE i VALUE 1,
+        lv_recvd TYPE wrbtr,
+        lt_bsid    TYPE TABLE OF ty_bsid,
+        lt_partial TYPE TABLE OF ty_partial.
+
+*--Company Code Currency
+  CLEAR: lw_t001.
+  READ TABLE gt_t001 INTO lw_t001
+                 WITH KEY bukrs = p_bukrs.
+  IF sy-subrc IS INITIAL.
+    gv_currency = lw_t001-waers.
+  ENDIF.
+
+  CLEAR: gw_upl_file, lv_recvd.
+  LOOP AT gt_upl_file INTO gw_upl_file.
+
+    lv_recvd = gw_upl_file-amont.
+
+    IF gw_upl_file-invce IS INITIAL.
+      lt_bsid[] = gt_bsid[].
+      DELETE lt_bsid WHERE kunnr NE gw_upl_file-kunnr.
+    ELSE.
+      lt_bsid[] = gt_bsid[].
+      DELETE lt_bsid WHERE kunnr NE gw_upl_file-kunnr.
+      DELETE lt_bsid WHERE belnr NE gw_upl_file-invce.
+*      CLEAR: gw_bsid.
+*      READ TABLE gt_bsid INTO gw_bsid
+*                     WITH KEY kunnr = gw_upl_file-kunnr
+*                              belnr = gw_upl_file-invce.
+    ENDIF.
+
+    CLEAR: gw_bsid.
+    LOOP AT lt_bsid INTO gw_bsid.
+
+      lv_count = sy-tabix.
+
+      IF gv_amtexcd = ' '.
+*        IF sy-subrc IS INITIAL.
+        gv_open_item = abap_true.
+
+        IF gw_upl_file-amont NE 0.
+
+
+*            DO.
+*              CLEAR: gw_partial.
+*              READ TABLE gt_partial INTO gw_partial
+*                                WITH KEY rebzg = gw_bsid-belnr.
+*              IF sy-subrc IS INITIAL.
+*                gw_bsid-dmbtr = gw_bsid-dmbtr - gw_partial-dmbtr.
+*                CLEAR: gw_partial.
+*              ELSE.
+*                EXIT.
+*              ENDIF.
+*            ENDDO.
+
+          CLEAR: gw_partial.
+          lt_partial[] = gt_partial[].
+          DELETE lt_partial WHERE kunnr NE gw_bsid-kunnr.
+          DELETE lt_partial WHERE rebzg NE gw_bsid-belnr.
+          LOOP AT lt_partial INTO gw_partial.
+            gw_bsid-dmbtr = gw_bsid-dmbtr - gw_partial-dmbtr.
+            gv_partial = abap_true.
+            CLEAR: gw_partial.
+          ENDLOOP.
+
+          IF gw_bsid-dmbtr LE gw_upl_file-amont.
+            gv_amount = gw_bsid-dmbtr.
+            CLEAR: gv_amtexcd.
+          ELSE.
+            gv_part_clear = abap_true.
+            gv_invoice    = gw_bsid-belnr.
+            gv_gjahr      = gw_bsid-gjahr.
+            gv_amount     = gw_upl_file-amont.
+            gv_amtexcd    = abap_true.
+*          IF .
+*
+*          ENDIF.
+          ENDIF.
+
+*--Posting Key
+          IF gv_amount > 0.
+            gv_postkey = 40.
+          ELSE.
+            gv_postkey = 50.
+            gv_amount = gv_amount * -1.
+          ENDIF.
+
+
+        ENDIF.
+
+        PERFORM zposting_fb05_detl.
+*If the amount doesn't match with the deduction amount,
+*this will be posted on account.
+*Clear the document, if the difference is too large for clearing, post
+        PERFORM zposting_fb01_clear.
+
+        REFRESH : gt_ftpost, gt_ftclear.
+
+        PERFORM zprepare_alv_msg USING lv_recvd
+                                       lv_count.
+
+        lv_count = lv_count + 1.
+
+        CLEAR: gv_amount, gv_posted, gv_gjahr,
+               gv_error, gv_clramt, gv_doc_no, "gv_amtexcd,
+               gv_postkey, gv_part_clear, gv_invoice.
+
+        REFRESH: lt_partial.
+
+        DELETE TABLE lt_bsid FROM gw_bsid.
+
+      ENDIF.
+
+    ENDLOOP.
+
+*--Post on account in case of no line items
+    IF lt_bsid IS INITIAL AND
+       gw_upl_file-amont NE 0.
+
+      gv_part_clear = abap_true.
+      gv_open_item  = space.
+      gv_amount     = gw_upl_file-amont.
+
+*--Posting Key
+      IF gv_amount > 0.
+        gv_postkey = 40.
+      ELSE.
+        gv_postkey = 50.
+        gv_amount = gw_upl_file-amont * -1.
+      ENDIF.
+
+      PERFORM zposting_fb05_detl.
+
+      PERFORM zposting_fb01_clear.
+
+      PERFORM zprepare_alv_msg USING lv_recvd
+                                     lv_count.
+
+      lv_count = lv_count + 1.
+
+      CLEAR: gv_amount, gv_posted, gv_gjahr,
+             gv_error, gv_clramt, gv_doc_no,
+             gv_postkey, gv_part_clear, gv_invoice.
+
+    ENDIF.
+
+    CLEAR: lv_recvd.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPOSTING_FB05_DETL
+*&---------------------------------------------------------------------*
+*       Fill in the posting details
+*----------------------------------------------------------------------*
+FORM zposting_fb05_detl.
+
+  DATA: lw_ftclear    TYPE ftclear,
+        lw_ftpost     TYPE ftpost,
+        lw_partial    TYPE ty_partial,
+        lv_count(4)   TYPE n VALUE '0',
+        lv_msgid      TYPE sy-msgid,
+        lv_msgno      TYPE sy-msgno,
+        lv_msgty      TYPE sy-msgty,
+        lv_msgv1      TYPE sy-msgv1,
+        lv_msgv2      TYPE sy-msgv2,
+        lv_msgv3      TYPE sy-msgv3,
+        lv_msgv4      TYPE sy-msgv4,
+        lv_subrc      TYPE sy-subrc,
+        lv_error      TYPE sy-lisel.
+
+  REFRESH : gt_ftpost, gt_ftclear.
+
+  lv_count = lv_count + 1.
+
+*--Header level details
+*--Company Code
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-014.
+  lw_ftpost-fval = p_bukrs.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Date
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-015.
+  CONCATENATE p_bldat+6(2) p_bldat+4(2) p_bldat+0(4)
+  INTO lw_ftpost-fval SEPARATED BY '.'.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Currency
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-016.
+  lw_ftpost-fval = gv_currency.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Type
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-017.
+  lw_ftpost-fval = p_blart.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Reference field
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-022.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Header Text
+  lw_ftpost-stype = text-013.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-037.
+  lw_ftpost-fval = gw_upl_file-pernr.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Item level detials
+
+*--Posting Key
+  lw_ftpost-stype = text-018. "
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam  = text-019.
+  lw_ftpost-fval = gv_postkey.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Account Number
+  lw_ftpost-stype = text-018.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam  = text-020.
+  lw_ftpost-fval = p_saknr.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Amount
+  lw_ftpost-stype = text-018.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam = text-021.
+  lw_ftpost-fval = gv_amount. "gw_upl_file-amont.
+  SHIFT lw_ftpost-fval LEFT DELETING LEADING space.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Assignment Number
+  lw_ftpost-stype = text-018.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam  = text-023.
+  lw_ftpost-fval  = gw_upl_file-pernr.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+*--Document Text
+  lw_ftpost-stype = text-018.
+  lw_ftpost-count = lv_count.
+  lw_ftpost-fnam  = text-024.
+*to display the text in the document posted/cleared
+  IF gv_part_clear = abap_true.
+    lw_ftpost-fval = 'Partly Cleared'.
+  ELSE.
+    lw_ftpost-fval  = gv_file.
+  ENDIF.
+  APPEND lw_ftpost TO gt_ftpost.
+  CLEAR : lw_ftpost.
+
+**for document clearing FM
+  lw_ftclear-agkoa   = gc_koart. "customer
+  lw_ftclear-agkon   = gw_bsid-kunnr. "Cust acc no
+  lw_ftclear-agbuk   = gw_bsid-bukrs. "comp code
+  lw_ftclear-xnops   = abap_true.
+  lw_ftclear-selfd   = gc_belnr.
+  lw_ftclear-selvon  = gw_bsid-belnr.
+  APPEND lw_ftclear TO gt_ftclear.
+  CLEAR : lw_ftclear.
+
+  CLEAR: lw_partial.
+  LOOP AT gt_partial INTO lw_partial
+                    WHERE rebzg EQ gw_bsid-belnr."gw_upl_file-invce.
+    lw_ftclear-agkoa   = gc_koart. "customer
+    lw_ftclear-agkon   = gw_upl_file-kunnr. "Cust acc no
+    lw_ftclear-agbuk   = gw_bsid-bukrs. "comp code
+    lw_ftclear-xnops   = abap_true.
+    lw_ftclear-selfd   = gc_belnr.
+    lw_ftclear-selvon  = lw_partial-belnr."'BELNR'
+    APPEND lw_ftclear TO gt_ftclear.
+    CLEAR : lw_ftclear, lw_partial.
+  ENDLOOP.
+
+
+  IF p_test        IS INITIAL.
+*      AND
+*     gv_part_clear IS NOT INITIAL.
+
+*--Posting interface start
+    CALL FUNCTION 'POSTING_INTERFACE_START'
+      EXPORTING
+       i_client                 = sy-mandt
+       i_function               = gc_c
+       i_mode                   = gc_n
+       i_update                 = gc_s
+     EXCEPTIONS
+       client_incorrect         = 1
+       function_invalid         = 2
+       group_name_missing       = 3
+       mode_invalid             = 4
+       update_invalid           = 5
+       user_invalid             = 6
+       OTHERS                   = 7
+              .
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+
+*--For clearing the open items
+    CALL FUNCTION 'POSTING_INTERFACE_CLEARING'
+      EXPORTING
+        i_auglv                    = gc_auglv
+        i_tcode                    = gc_fb05
+        i_sgfunct                  = gc_c
+      IMPORTING
+        e_msgid                    = lv_msgid
+        e_msgno                    = lv_msgno
+        e_msgty                    = lv_msgty
+        e_msgv1                    = lv_msgv1
+        e_msgv2                    = lv_msgv2
+        e_msgv3                    = lv_msgv3
+        e_msgv4                    = lv_msgv4
+        e_subrc                    = lv_subrc
+      TABLES
+        t_blntab                   = gt_blntab
+        t_ftclear                  = gt_ftclear
+        t_ftpost                   = gt_ftpost
+        t_fttax                    = gt_fttax
+      EXCEPTIONS
+        clearing_procedure_invalid = 1
+        clearing_procedure_missing = 2
+        table_t041a_empty          = 3
+        transaction_code_invalid   = 4
+        amount_format_error        = 5
+        too_many_line_items        = 6
+        company_code_invalid       = 7
+        screen_not_found           = 8
+        no_authorization           = 9
+        OTHERS                     = 10.
+
+    IF lv_msgty = gc_s.
+      gv_doc_no = lv_msgv1.
+*To get the cleared document number
+      CLEAR: lw_ftpost.
+      READ TABLE gt_ftpost INTO lw_ftpost
+                       WITH KEY fnam = text-021.
+      IF sy-subrc IS INITIAL.
+        gv_clramt = lw_ftpost-fval.
+      ENDIF.
+      gw_upl_file-amont = gw_upl_file-amont - gv_clramt.
+    ELSEIF lv_msgty = gc_e.
+      CLEAR: gv_toolarge.
+      IF ( lv_msgty = gc_e
+       AND lv_msgno = gc_263
+       AND lv_msgid = gc_f5 ).
+        gv_toolarge = gc_x.
+        gv_amtexcd  = gc_x.
+        CLEAR: lw_ftpost.
+*      READ TABLE gt_ftpost INTO lw_ftpost
+*                       WITH KEY fnam = text-021.
+*      IF sy-subrc IS INITIAL.
+*        gv_clramt = lw_ftpost-fval.
+*      ENDIF.
+*      gw_upl_file-amont = gw_upl_file-amont - gv_clramt.
+      ELSE.
+        CALL FUNCTION 'RPY_MESSAGE_COMPOSE'
+          EXPORTING
+           language                = sy-langu
+           message_id              = lv_msgid
+           message_number          = lv_msgno
+           message_var1            = lv_msgv1
+           message_var2            = lv_msgv2
+           message_var3            = lv_msgv3
+           message_var4            = lv_msgv4
+         IMPORTING
+           message_text            = lv_error
+
+         EXCEPTIONS
+           message_not_found       = 1
+           OTHERS                  = 2.
+        IF sy-subrc IS INITIAL.
+          gv_error = lv_error.
+        ENDIF.
+      ENDIF.
+    ENDIF.
+
+*--Commit the posting/ clearing
+    CALL FUNCTION 'POSTING_INTERFACE_END'
+      EXPORTING
+        i_bdcimmed              = abap_true
+      EXCEPTIONS
+        session_not_processable = 1
+        OTHERS                  = 2.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPOSTING_FB01_CLEAR
+*&---------------------------------------------------------------------*
+*       Posting Interface Clearing
+*----------------------------------------------------------------------*
+FORM zposting_fb01_clear.
+
+  DATA : lv_msgid	      TYPE sy-msgid,
+         lv_msgno       TYPE sy-msgno,
+         lv_msgty       TYPE sy-msgty,
+         lv_msgv1       TYPE sy-msgv1,
+         lv_msgv2       TYPE sy-msgv2,
+         lv_msgv3       TYPE sy-msgv3,
+         lv_msgv4       TYPE sy-msgv4,
+         lv_subrc       TYPE sy-subrc,
+         lw_ftpost      TYPE ftpost,
+         lw_ftpost1     TYPE ftpost,
+         lv_count(4)    TYPE n,
+         lv_error       TYPE sy-lisel.
+
+  IF p_test      IS INITIAL AND
+     gv_toolarge IS NOT INITIAL AND
+     gv_amtexcd  IS NOT INITIAL.
+
+*IF the clearing is not done, due to the difference being too large,
+*Balance the document and post it
+    IF gv_part_clear EQ abap_true.
+*    OR gv_open_item  NE abap_true.
+
+      CLEAR : lv_msgid, lv_msgno, lv_msgty,
+              lv_msgv1, lv_msgv2, lv_msgv3,
+              lv_msgv4, lv_subrc.
+
+*--Header level details
+*--Document date
+      CLEAR: lw_ftpost, lw_ftpost1.
+      READ TABLE gt_ftpost INTO lw_ftpost1
+                       WITH KEY fnam = text-015.
+      IF sy-subrc = 0.
+        lw_ftpost-fval = lw_ftpost1-fval.
+        lv_count       = lw_ftpost1-count + 1.
+      ENDIF.
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-015. "document date field
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost, lw_ftpost1.
+
+*--Company code
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-014.
+      lw_ftpost-fval  = p_bukrs.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Document Currency value
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-016.
+      lw_ftpost-fval  = gc_aud.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Document Type value
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-017.
+      lw_ftpost-fval  = p_blart.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Reference Number value
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam = text-022.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Document Header Text
+      lw_ftpost-stype = text-013.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam = text-037.
+      lw_ftpost-fval = gw_upl_file-pernr.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Detail Records
+*--Bank debit entry # Posting Key
+      CLEAR: lw_ftpost1.
+      READ TABLE gt_ftpost INTO lw_ftpost1
+                       WITH KEY fnam = text-019.
+      IF sy-subrc IS INITIAL
+      AND lw_ftpost1-fval = gc_40.
+        lw_ftpost-fval = gc_15.
+      ELSEIF sy-subrc IS INITIAL
+         AND lw_ftpost1-fval = gc_50.
+        lw_ftpost-fval = gc_05.
+      ENDIF.
+      CLEAR : lw_ftpost1.
+
+      lw_ftpost-stype = text-018.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-019.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Bank debit entry # Document Number
+      lw_ftpost-stype = text-018.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-020.
+      lw_ftpost-fval  = gw_upl_file-kunnr. "p_saknr.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Bank debit entry # Amount
+      lw_ftpost-stype = text-018.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-021.
+      CLEAR: lw_ftpost1.
+      READ TABLE gt_ftpost INTO lw_ftpost1
+                       WITH KEY fnam = text-021.
+      IF sy-subrc = 0.
+        lw_ftpost-fval = lw_ftpost1-fval.
+      ENDIF.
+      SHIFT lw_ftpost-fval LEFT DELETING LEADING space.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost, lw_ftpost1.
+
+**--Bank debit entry # Profit Center
+*      lw_ftpost-stype = text-018.
+*      lw_ftpost-count = lv_count.
+*      lw_ftpost-fnam  = text-023.
+*      APPEND lw_ftpost TO gt_ftpost.
+*      CLEAR : lw_ftpost.
+
+*--Assignment Number
+      lw_ftpost-stype = text-018.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-023.
+      lw_ftpost-fval  = gw_upl_file-pernr.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost.
+
+*--Item text
+      lw_ftpost-stype = text-018.
+      lw_ftpost-count = lv_count.
+      lw_ftpost-fnam  = text-024.
+      CLEAR: lw_ftpost1.
+*      READ TABLE gt_ftpost INTO lw_ftpost1
+*                       WITH KEY fnam = text-024.
+*      IF sy-subrc = 0.
+*        lw_ftpost-fval = lw_ftpost1-fval.
+*      ELSE.
+        lw_ftpost-fval = 'Posted on account'.
+*      ENDIF.
+      APPEND lw_ftpost TO gt_ftpost.
+      CLEAR : lw_ftpost,lw_ftpost1.
+
+      IF gv_part_clear = abap_true.
+        lw_ftpost-stype = text-018.
+        lw_ftpost-count = lv_count.
+        lw_ftpost-fnam  = text-025.
+        lw_ftpost-fval  = gv_invoice.
+        APPEND lw_ftpost TO gt_ftpost.
+        CLEAR : lw_ftpost.
+
+        lw_ftpost-stype = text-018.
+        lw_ftpost-count = lv_count.
+        lw_ftpost-fnam  = text-026.
+        lw_ftpost-fval  = gv_gjahr.
+        APPEND lw_ftpost TO gt_ftpost.
+        CLEAR : lw_ftpost.
+
+        lw_ftpost-stype = text-018.
+        lw_ftpost-count = lv_count.
+        lw_ftpost-fnam  = text-027.
+        lw_ftpost-fval  = gc_001.
+        APPEND lw_ftpost TO gt_ftpost.
+        CLEAR : lw_ftpost.
+      ENDIF.
+
+*--for posting the document
+      CALL FUNCTION 'POSTING_INTERFACE_START'
+        EXPORTING
+          i_client           = sy-mandt
+          i_function         = gc_c
+          i_mode             = gc_n
+          i_update           = gc_s
+        EXCEPTIONS
+          client_incorrect   = 1
+          function_invalid   = 2
+          group_name_missing = 3
+          mode_invalid       = 4
+          update_invalid     = 5
+          user_invalid       = 6
+          OTHERS             = 7.
+      IF sy-subrc <> 0.
+* Implement suitable error handling here
+      ENDIF.
+
+*to post the balance document
+      CALL FUNCTION 'POSTING_INTERFACE_DOCUMENT'
+        EXPORTING
+          i_tcode                  = gc_fb01
+          i_sgfunct                = gc_c
+        IMPORTING
+          e_msgid                  = lv_msgid
+          e_msgno                  = lv_msgno
+          e_msgty                  = lv_msgty
+          e_msgv1                  = lv_msgv1
+          e_msgv2                  = lv_msgv2
+          e_msgv3                  = lv_msgv3
+          e_msgv4                  = lv_msgv4
+          e_subrc                  = lv_subrc
+        TABLES
+          t_blntab                 = gt_blntab
+          t_ftpost                 = gt_ftpost
+          t_fttax                  = gt_fttax
+        EXCEPTIONS
+          account_missing          = 1
+          company_code_missing     = 2
+          posting_key_invalid      = 3
+          posting_key_missing      = 4
+          record_type_invalid      = 5
+          transaction_code_invalid = 6
+          amount_format_error      = 7
+          too_many_line_items      = 8
+          company_code_invalid     = 9
+          screen_not_found         = 10
+          no_authorization         = 11
+          OTHERS                   = 12.
+
+      IF sy-subrc <> 0.
+* Implement suitable error handling here
+      ENDIF.
+
+      IF lv_msgty = gc_s.
+        gv_doc_no = lv_msgv1.
+*--Document number of the posted document
+        CLEAR: lw_ftpost.
+        READ TABLE gt_ftpost INTO lw_ftpost
+                         WITH KEY fnam = text-021.
+        IF sy-subrc = 0.
+          gv_posted = lw_ftpost-fval.
+        ENDIF.
+        gw_upl_file-amont = gw_upl_file-amont - gv_posted.
+      ELSEIF lv_msgty = gc_e.
+        CALL FUNCTION 'RPY_MESSAGE_COMPOSE'
+          EXPORTING
+           language                = sy-langu
+           message_id              = lv_msgid
+           message_number          = lv_msgno
+           message_var1            = lv_msgv1
+           message_var2            = lv_msgv2
+           message_var3            = lv_msgv3
+           message_var4            = lv_msgv4
+         IMPORTING
+           message_text            = lv_error
+
+         EXCEPTIONS
+           message_not_found       = 1
+           OTHERS                  = 2.
+        IF sy-subrc IS INITIAL.
+          gv_error = lv_error.
+        ENDIF.
+      ENDIF.
+
+*--Commit the posted document
+      CALL FUNCTION 'POSTING_INTERFACE_END'
+        EXPORTING
+          i_bdcimmed              = abap_true
+        EXCEPTIONS
+          session_not_processable = 1
+          OTHERS                  = 2.
+      IF sy-subrc <> 0.
+* Implement suitable error handling here
+      ENDIF.
+
+      CLEAR : lv_msgid, lv_msgno, lv_msgty,
+              lv_msgv1, lv_msgv2, lv_msgv3,
+              lv_msgv4, lv_subrc.
+    ENDIF.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZSEND_RULE_MAIL
+*&---------------------------------------------------------------------*
+*       Send a mail to the people maintained in the rule.
+*----------------------------------------------------------------------*
+FORM zsend_rule_mail .
+
+  DATA: lt_container  TYPE STANDARD TABLE OF swcont,
+        lw_container  TYPE swcont,
+        lt_actors     TYPE STANDARD TABLE OF swhactor,
+        lw_actors     TYPE swhactor,
+        lt_receivers  TYPE STANDARD TABLE OF somlreci1,
+        lw_receivers  TYPE somlreci1,
+        lt_lines      TYPE TABLE OF tline,
+        lw_lines      TYPE tline,
+        lv_pernr      TYPE pernr_d,
+        lt_0105       TYPE STANDARD TABLE OF p0105,
+        lw_0105       TYPE p0105,
+        lw_mail       TYPE solisti1,
+        lw_alv_output TYPE ty_alv_output,
+        lv_index      TYPE sy-tabix,
+        lw_document   TYPE sodocchgi1,
+        lt_attachment TYPE STANDARD TABLE OF solisti1,
+        lw_attachment TYPE solisti1,
+        lt_objpack    TYPE STANDARD TABLE OF sopcklsti1,
+        lw_objpack    TYPE sopcklsti1,
+        lv_uname      TYPE soextreci1-receiver,
+        lv_amt_postd  TYPE string,
+        lv_amt_recvd  TYPE string,
+        lv_amt_clear  TYPE string,
+        lv_sent_to_all TYPE sonv-flag.
+
+  REFRESH : lt_container, lt_0105, lt_receivers,
+            lt_actors, lt_objpack .
+
+  CLASS cl_abap_char_utilities DEFINITION LOAD.
+
+*--Fetch the actors of the rule.
+  CLEAR: lw_container.
+  lw_container-element = gc_element.
+  lw_container-value   = gc_value.
+  APPEND lw_container TO lt_container.
+
+  CALL FUNCTION 'RH_GET_ACTORS'
+    EXPORTING
+      act_object      = gc_rule
+    TABLES
+      actor_container = lt_container
+      actor_tab       = lt_actors.
+
+  CHECK NOT lt_actors[] IS INITIAL.
+
+  CLEAR: lw_actors.
+  LOOP AT lt_actors INTO lw_actors
+                   WHERE otype EQ gc_p.
+
+    CLEAR: lv_pernr.
+    lv_pernr = lw_actors-objid.
+*--Read the email id of the pernr
+    CALL FUNCTION 'HR_READ_INFOTYPE'
+      EXPORTING
+        pernr           = lv_pernr
+        infty           = '0105'
+        begda           = sy-datum
+        endda           = sy-datum
+      TABLES
+        infty_tab       = lt_0105
+      EXCEPTIONS
+        infty_not_found = 1
+        OTHERS          = 2.
+    IF sy-subrc IS INITIAL.
+      READ TABLE lt_0105 INTO lw_0105
+                     WITH KEY subty = '0010'.
+      IF sy-subrc IS INITIAL.
+        lw_receivers-receiver = lw_0105-usrid_long.
+        lw_receivers-rec_type = gc_u.
+        APPEND lw_receivers TO lt_receivers.
+        CLEAR: lw_receivers.
+      ENDIF.
+
+    ENDIF.
+  ENDLOOP.
+
+*--Read SO10 text for email body.
+  REFRESH : lt_lines.
+  CALL FUNCTION 'READ_TEXT'
+    EXPORTING
+      client                  = sy-mandt
+      id                      = gc_st
+      language                = gc_e
+      name                    = gc_name
+      object                  = gc_text
+    TABLES
+      lines                   = lt_lines
+    EXCEPTIONS
+      id                      = 1
+      language                = 2
+      name                    = 3
+      not_found               = 4
+      object                  = 5
+      reference_check         = 6
+      wrong_access_to_archive = 7
+      OTHERS                  = 8.
+  IF sy-subrc <> 0.
+* Implement suitable error handling here
+  ENDIF.
+  LOOP AT lt_lines INTO lw_lines.
+    lw_mail-line = lw_lines-tdline.
+    APPEND lw_mail TO gt_mail.
+    CLEAR: lw_lines, lw_mail.
+  ENDLOOP.
+
+  IF lt_receivers IS NOT INITIAL.
+* Send the document
+    lv_uname = sy-uname.
+
+*--Attachment - Header
+    CONCATENATE text-028
+                text-029
+                text-030
+                text-031
+                text-032
+                text-033
+                text-034
+                text-035
+                text-036
+           INTO lw_attachment
+      SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+
+    APPEND lw_attachment TO lt_attachment.
+    CLEAR :lw_attachment.
+
+*Attachment - Details
+    CLEAR: lw_alv_output.
+    LOOP AT gt_alv_output INTO lw_alv_output.
+
+      lv_amt_postd = lw_alv_output-amt_postd.
+      lv_amt_clear = lw_alv_output-amt_clear.
+      lv_amt_recvd = lw_alv_output-amt_recvd.
+
+      CONCATENATE lw_alv_output-row
+                  lw_alv_output-cust_id
+                  lw_alv_output-cust_name
+                  lw_alv_output-belnr
+                  lw_alv_output-invoice
+                  lv_amt_postd
+                  lv_amt_clear
+                  lv_amt_recvd
+                  lw_alv_output-message
+      INTO lw_attachment
+      SEPARATED BY cl_abap_char_utilities=>horizontal_tab.
+
+      CONCATENATE cl_abap_char_utilities=>newline lw_attachment
+             INTO lw_attachment.
+
+      APPEND lw_attachment TO lt_attachment.
+      CLEAR :lw_attachment.
+    ENDLOOP.
+
+*--Attachment
+    CLEAR: lw_objpack.
+
+    lw_objpack-transf_bin = space.
+    lw_objpack-head_start = 1.
+    lw_objpack-head_num   = 0.
+    lw_objpack-body_start = 1.
+    lw_objpack-body_num = lines( gt_mail ).
+    lw_objpack-doc_type = gc_raw.
+    APPEND lw_objpack TO lt_objpack.
+    CLEAR : lw_objpack.
+
+    lw_objpack-transf_bin  = abap_true.
+    lw_objpack-head_start  = 1.
+    lw_objpack-head_num    = 1.
+    lw_objpack-body_start  = 1.
+    lw_objpack-body_num    = lines( lt_attachment ).
+    lw_objpack-doc_type    = gc_xls.
+    lw_objpack-obj_name    = gc_objname.
+    lw_objpack-obj_descr   = gc_objdesc.
+    lw_objpack-doc_size    = lw_objpack-body_num * 255.
+    APPEND lw_objpack TO lt_objpack.
+    CLEAR lw_objpack.
+
+*--Document size
+    DESCRIBE TABLE lt_attachment LINES lv_index.
+    CLEAR: lw_attachment.
+    READ TABLE lt_attachment INTO lw_attachment INDEX lv_index.
+    lw_document-doc_size =
+                       ( lv_index - 1 ) * 255 + strlen( lw_attachment ).
+    lw_document-obj_name   = gc_objdesc.
+    lw_document-obj_descr  = gc_objdesc. "mail subject
+    lw_document-obj_langu  = sy-langu.
+    lw_document-sensitivty = gc_f.
+
+*to mail the document with the attachment
+    CALL FUNCTION 'SO_DOCUMENT_SEND_API1'
+      EXPORTING
+        document_data              = lw_document
+        put_in_outbox              = abap_true
+        sender_address             = lv_uname
+        sender_address_type        = gc_b
+        commit_work                = abap_true
+      IMPORTING
+        sent_to_all                = lv_sent_to_all
+      TABLES
+        packing_list               = lt_objpack
+        contents_bin               = lt_attachment
+        contents_txt               = gt_mail "mail content
+        receivers                  = lt_receivers "mail recipients
+      EXCEPTIONS
+        too_many_receivers         = 1
+        document_not_sent          = 2
+        document_type_not_exist    = 3
+        operation_no_authorization = 4
+        parameter_error            = 5
+        x_error                    = 6
+        enqueue_error              = 7
+        OTHERS                     = 8.
+    IF sy-subrc <> 0.
+* Implement suitable error handling here
+    ENDIF.
+  ENDIF.
+
+  CLEAR : lw_document.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZDISPLAY_ALV_OUTPUT
+*&---------------------------------------------------------------------*
+*       Display ALV in output format
+*----------------------------------------------------------------------*
+FORM zdisplay_alv_output.
+
+  DATA: lw_layout TYPE slis_layout_alv.
+
+*--Build Field Catalog
+  PERFORM zbuild_fieldcat.
+
+*--Layout
+  lw_layout-zebra = abap_true.
+  lw_layout-colwidth_optimize = abap_true.
+
+*--ALV GRID Display
+  CALL FUNCTION 'REUSE_ALV_GRID_DISPLAY'
+    EXPORTING
+      i_callback_program     = sy-repid
+      i_callback_top_of_page = 'TOP-OF-PAGE'
+      is_layout              = lw_layout
+      it_fieldcat            = gt_fieldcat
+      i_default              = abap_true
+      i_save                 = gc_a
+    TABLES
+      t_outtab               = gt_alv_output
+    EXCEPTIONS
+      program_error          = 1
+      OTHERS                 = 2.
+  IF sy-subrc <> 0.
+    MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+            WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZBUILD_FIELDCAT
+*&---------------------------------------------------------------------*
+*       Build Field Catalog
+*----------------------------------------------------------------------*
+FORM zbuild_fieldcat .
+
+  IF p_test = abap_true.
+    PERFORM zfill_fieldcat USING:   text-039 text-057 text-048,
+                                    text-040 text-057 text-049,
+                                    text-041 text-057 text-050,
+                                    text-047 text-057 text-056.
+  ELSE.
+    PERFORM zfill_fieldcat USING :  text-039 text-038 text-048,
+                                    text-040 text-038 text-049,
+                                    text-041 text-038 text-050,
+                                    text-042 text-038 text-051,
+                                    text-043 text-038 text-052,
+                                    text-044 text-038 text-053,
+                                    text-045 text-038 text-054,
+                                    text-046 text-038 text-055,
+                                    text-047 text-038 text-056.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFILL_FIELDCAT
+*&---------------------------------------------------------------------*
+*       Fill in the field catalog
+*----------------------------------------------------------------------*
+FORM zfill_fieldcat USING  pv_lc1
+                           pv_lc2
+                           pv_lc3.
+
+  DATA: lw_fieldcat  TYPE slis_fieldcat_alv.
+
+*--Fill the field catalogue
+  lw_fieldcat-fieldname = pv_lc1.
+  lw_fieldcat-tabname   = pv_lc2.
+  lw_fieldcat-seltext_l = pv_lc3.
+  APPEND lw_fieldcat TO gt_fieldcat.
+  CLEAR: lw_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  TOP-OF-PAGE
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+FORM top-of-page.
+
+  DATA: lt_header TYPE slis_t_listheader,
+        lw_header TYPE slis_listheader.
+
+*--Title
+  lw_header-typ  = gc_h.
+  lw_header-info = text-058.
+  APPEND lw_header TO lt_header.
+  CLEAR lw_header.
+
+*--Date
+  lw_header-typ  = gc_s.
+  lw_header-key = text-059.
+  lw_header-info = sy-datum.
+  APPEND lw_header TO lt_header.
+  CLEAR: lw_header.
+
+  CALL FUNCTION 'REUSE_ALV_COMMENTARY_WRITE'
+    EXPORTING
+      it_list_commentary = lt_header.
+
+ENDFORM.                    "top-of-page
+*&---------------------------------------------------------------------*
+*&      Form  ZPREPARE_ALV_MSG
+*&---------------------------------------------------------------------*
+*       Prepare the ALV output
+*----------------------------------------------------------------------*
+FORM zprepare_alv_msg USING p_recvd
+                            p_count.
+
+  DATA: lw_alv_output TYPE ty_alv_output.
+
+*--ALV Output
+  IF p_test IS INITIAL.
+    CLEAR: lw_alv_output.
+
+    lw_alv_output-row       = p_count.
+    lw_alv_output-cust_id   = gw_upl_file-kunnr.
+
+    IF gw_bsid-name1 IS INITIAL.
+      CLEAR: gw_bsid.
+      READ TABLE gt_bsid INTO gw_bsid
+                     WITH KEY kunnr = gw_upl_file-kunnr.
+      IF sy-subrc IS INITIAL.
+        lw_alv_output-cust_name = gw_bsid-name1.
+      ENDIF.
+    ELSE.
+      lw_alv_output-cust_name = gw_bsid-name1.
+    ENDIF.
+
+    lw_alv_output-belnr     = gv_doc_no.
+    IF gw_bsid-belnr IS INITIAL.
+      lw_alv_output-invoice   = gw_upl_file-invce.
+    ELSE.
+      lw_alv_output-invoice   = gw_bsid-belnr.
+    ENDIF.
+
+    IF NOT gv_posted IS INITIAL.
+      IF gv_postkey = 40.
+        lw_alv_output-amt_postd = gv_posted.
+      ELSE.
+        lw_alv_output-amt_postd = gv_posted * -1.
+      ENDIF.
+    ENDIF.
+
+    IF NOT gv_clramt IS INITIAL.
+      IF gv_postkey = 40.
+        lw_alv_output-amt_clear = gv_clramt.
+      ELSE.
+        lw_alv_output-amt_clear = gv_clramt * -1.
+      ENDIF.
+    ENDIF.
+
+    IF NOT p_recvd IS INITIAL.
+      IF gv_postkey = 40.
+        lw_alv_output-amt_recvd = p_recvd.
+      ELSE.
+        lw_alv_output-amt_recvd = p_recvd * -1.
+      ENDIF.
+    ENDIF.
+
+    lw_alv_output-message  = gv_error.
+
+    APPEND lw_alv_output TO gt_alv_output.
+    CLEAR: lw_alv_output.
+  ELSE.
+
+    CLEAR: gw_test_alv.
+
+    gw_test_alv-row       = p_count.
+    gw_test_alv-cust_id   = gw_upl_file-kunnr.
+    gw_test_alv-cust_name = gw_bsid-name1.
+*     gw_test_alv-message  =
+
+    APPEND gw_test_alv TO gt_test_alv.
+    CLEAR: gw_test_alv.
+  ENDIF.
+
+ENDFORM.
