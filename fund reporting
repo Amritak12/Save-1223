@@ -1,0 +1,1561 @@
+*&---------------------------------------------------------------------*
+*&  Include           ZFIR_FUNDS_PC_REPORT_FORM01
+*&---------------------------------------------------------------------*
+*----------------------------------------------------------------------*
+*  Program Name: ZFIR_FUNDS_PC_REPORTING                               *
+*  Program Title: Report - Funds reporting by profit centres           *
+*  Author: KURUVAIA                                                    *
+*  R/3 Release:  ECC 7.4                                               *
+*  Technical Script:                                                   *
+*  Transport Request: DE5K915898                                       *
+*----------------------------------------------------------------------*
+*  Type of program: Interface                                          *
+*& The business requirement of this report is to able to display dummy *
+*  of default profit centres and the relationship with the correct     *
+*  profit centre. Also to allow the modification of the details at line*
+*  item level and generate accounting entries per document and line    *
+*  item with the changed profit centre.                                *
+*                                                                      *
+*  NB: If you change the functionality of this program, please         *
+*      update the on-line documentation and the specification.         *
+*      Every Version in the Version Management must have a             *
+*      corresponding entry in the Modification History.                *
+*======================================================================*
+* MODIFICATION HISTORY                                                 *
+* DATE        USER ID(NAME)    REQUEST        DESCRIPTION OF CHANGE    *
+*                                                                      *
+*======================================================================*
+*&---------------------------------------------------------------------*
+*&      Form  ZINIT_LAYOUT
+*&---------------------------------------------------------------------*
+*       Initialize the layout
+*----------------------------------------------------------------------*
+FORM zinit_layout .
+
+  gw_variant-report = sy-repid.
+
+*--Get default layout variant.
+  CALL FUNCTION 'REUSE_ALV_VARIANT_DEFAULT_GET'
+    EXPORTING
+      i_save     = gc_save
+    CHANGING
+      cs_variant = gw_variant
+    EXCEPTIONS
+      not_found  = 2.
+  IF sy-subrc = 0.
+    p_layt = gw_variant-variant.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZLAYOUT_SEARCHELP
+*&---------------------------------------------------------------------*
+*       Layout Search help
+*----------------------------------------------------------------------*
+FORM zlayout_searchelp .
+
+*--Search help for the layout field
+  CALL FUNCTION 'REUSE_ALV_VARIANT_F4'
+    EXPORTING
+      is_variant               = gw_variant
+      i_save                   = gc_save
+      i_tabname_header         = gw_tabhead
+      i_tabname_item           = gw_tabitem
+   IMPORTING
+     e_exit                    = gv_exit
+     es_variant                = gw_variant
+   EXCEPTIONS
+     not_found                 = 1
+     program_error             = 2
+     OTHERS                    = 3
+            .
+  IF sy-subrc IS INITIAL.
+    IF gv_exit EQ space.
+      p_layt = gw_variant-variant.
+    ENDIF.
+  ELSE.
+    MESSAGE ID sy-msgid TYPE 'S' NUMBER sy-msgno
+       WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZSCREEN_VALIDATIONS
+*&---------------------------------------------------------------------*
+*       On screen validations.
+*----------------------------------------------------------------------*
+FORM zscreen_validations .
+
+*--Authorisation check
+  AUTHORITY-CHECK OBJECT  'F_FAGL_LDR'
+  ID 'BUKRS' FIELD s_bukrs.
+  IF sy-subrc NE 0.
+    MESSAGE 'No authorisation for company code' TYPE 'E'.
+  ENDIF.
+
+*--Company Code
+  IF NOT s_bukrs IS INITIAL.
+    SELECT bukrs AS bukrs
+      INTO TABLE @DATA(lt_t001)
+      FROM t001
+     WHERE bukrs IN @s_bukrs.
+    IF NOT sy-subrc IS INITIAL.
+      MESSAGE s005(zf) DISPLAY LIKE gc_e
+         WITH text-001 s_bukrs-low.
+    ENDIF.
+  ENDIF.
+
+*--GL Account
+  IF NOT s_racct IS INITIAL.
+    LOOP AT s_racct.
+      SELECT hkont AS hkont
+        INTO TABLE @DATA(lt_hkont)
+        FROM bseg
+       WHERE bukrs IN @s_bukrs
+         AND hkont EQ @s_racct-low.
+      IF NOT sy-subrc IS INITIAL.
+        MESSAGE s005(zf) DISPLAY LIKE gc_e
+           WITH text-001 s_racct-low.
+      ENDIF.
+    ENDLOOP.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFETCH_FUND_DATA
+*&---------------------------------------------------------------------*
+*       Fetch the data
+*----------------------------------------------------------------------*
+FORM zfetch_fund_data .
+
+  DATA: lt_line_items TYPE TABLE OF ty_line_items,
+        lt_3kei       TYPE STANDARD TABLE OF k9rd020100001,
+        lw_3kei       TYPE k9rd020100001,
+        lt_bseg       TYPE TABLE OF ty_bseg,
+        lw_bseg       TYPE ty_bseg,
+        lw_line_items TYPE ty_line_items,
+        lw_line_items1 TYPE ty_line_items1,
+        lv_compcode   TYPE bukrs,
+        lv_carea      TYPE kokrs,
+        lv_param      TYPE kedrparam,
+        lt_xref       TYPE TABLE OF ty_xref,
+        lw_xref       TYPE ty_xref,
+        lt_dupli      TYPE TABLE OF ty_xref,
+        lw_dupli      TYPE ty_xref,
+        lv_docu_num   TYPE char8,
+        lv_account    TYPE char8,
+        lv_docno      TYPE belnr_d,
+        lv_accnt      TYPE saknr,
+        lv_tabix      TYPE sy-tabix,
+        lt_glpca      TYPE TABLE OF ty_glpca,
+        lv_periv      TYPE t009b-periv,
+        lv_budat      TYPE sy-datum,
+        lv_fisyr      TYPE t009b-bdatj.
+
+  RANGES: lr_ryear FOR glpca-ryear.
+
+*--Get the document type.
+  SELECT SINGLE low
+    FROM tvarvc
+    INTO gv_docty
+   WHERE name = gc_blart.
+
+*--Get the controlling area
+  LOOP AT s_bukrs.
+
+    CLEAR: lv_carea, lv_compcode.
+
+
+    lv_compcode = s_bukrs-low.
+
+    CALL FUNCTION 'BAPI_CONTROLLINGAREA_FIND'
+      EXPORTING
+        companycodeid           = lv_compcode
+      IMPORTING
+        controllingareaid       = lv_carea.
+
+*--Get the table name from TKEDRS
+    SELECT SINGLE param_1
+      INTO lv_param
+      FROM tkedrs
+     WHERE applclass   EQ gc_pca
+       AND kedrstratid EQ gc_prct
+       AND kedrenv     EQ lv_carea
+       AND method      EQ gc_drule.
+    IF sy-subrc IS INITIAL.
+    ENDIF.
+
+*--Fetch the entries from the dynamic table based on KOKRS
+    SELECT *
+ APPENDING TABLE lt_3kei
+      FROM (lv_param)
+     WHERE sour2_from = lv_compcode.
+
+    SORT lt_3kei BY sour1_from.
+
+  ENDLOOP.
+
+*--Determine the fiscal year variant.
+  SELECT SINGLE periv
+    INTO lv_periv
+    FROM t001
+   WHERE bukrs = s_bukrs-low.
+
+*--Fetch the fiscal year
+  LOOP AT s_budat.
+
+    CLEAR: lv_budat, lv_fisyr.
+    lv_budat = s_budat-low.
+
+    CALL FUNCTION 'DATE_TO_PERIOD_CONVERT'
+      EXPORTING
+        i_date               = lv_budat
+        i_periv              = lv_periv
+     IMPORTING
+        e_gjahr              = lv_fisyr.
+    IF sy-subrc IS INITIAL.
+      lr_ryear-sign   = 'I'.
+      lr_ryear-option = 'EQ'.
+      lr_ryear-low    = lv_fisyr.
+      APPEND lr_ryear.
+    ENDIF.
+
+  ENDLOOP.
+
+*--Fetch the line items from GLPCA
+  SELECT ryear  AS gjahr
+         drcrk  AS shkzg
+         refdocnr AS belnr
+         docln  AS buzei
+         rbukrs AS bukrs
+         rprctr AS prctr
+         racct  AS hkont
+         hsl    AS dmbtr
+         budat  AS budat
+    FROM glpca
+APPENDING CORRESPONDING FIELDS OF TABLE lt_line_items
+ PACKAGE SIZE 10000
+     FOR ALL ENTRIES IN lt_3kei[]
+   WHERE rldnr EQ gc_8a
+     AND rrcty EQ gc_0
+     AND rvers EQ gc_vers
+     AND ryear IN lr_ryear
+     AND rbukrs IN s_bukrs
+     AND ( rprctr EQ lt_3kei-target1
+        OR rprctr EQ gc_dummy )
+     AND racct IN s_racct
+     AND ( rhoart NE gc_24
+        OR rhoart NE gc_25 )
+     AND budat IN s_budat
+     AND stflg EQ space
+     AND stokz EQ space.
+
+    APPEND LINES OF lt_line_items[] TO gt_line_items[].
+    REFRESH: lt_line_items[].
+
+*--Select data from BFOK_A
+    SELECT bukrs
+           belnr
+           gjahr
+           buzei
+           budat
+           hkont
+           shkzg
+           dmbtr
+           prctr
+      FROM bfok_a
+  APPENDING CORRESPONDING FIELDS OF TABLE lt_line_items
+   FOR ALL ENTRIES IN lt_3kei[]
+     WHERE bukrs IN s_bukrs
+       AND budat IN s_budat
+       AND hkont IN s_racct
+       AND ( prctr EQ lt_3kei-target1
+          OR prctr EQ gc_dummy ).
+
+    APPEND LINES OF lt_line_items[] TO gt_line_items[].
+    REFRESH: lt_line_items[].
+
+*--Select data from BFOD_A
+    SELECT bukrs
+           belnr
+           gjahr
+           buzei
+           budat
+           hkont
+           shkzg
+           dmbtr
+           prctr
+      FROM bfod_a
+  APPENDING CORRESPONDING FIELDS OF TABLE lt_line_items
+   FOR ALL ENTRIES IN lt_3kei[]
+     WHERE bukrs IN s_bukrs
+       AND budat IN s_budat
+       AND hkont IN s_racct
+       AND ( prctr EQ lt_3kei-target1
+          OR prctr EQ gc_dummy ).
+
+    APPEND LINES OF lt_line_items[] TO gt_line_items[].
+    REFRESH: lt_line_items[].
+
+*--Build a range to check if the postings have been made for these
+*--documents already
+    CLEAR: lw_line_items, lw_xref.
+    LOOP AT gt_line_items INTO lw_line_items.
+      CLEAR: lv_docu_num.
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input        = lw_line_items-belnr
+       IMPORTING
+         output        = lv_docu_num.
+
+      CLEAR: lv_account.
+      CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+        EXPORTING
+          input        = lw_line_items-hkont
+       IMPORTING
+         output        = lv_account.
+
+      CONCATENATE lv_docu_num
+                  lw_line_items-buzei
+                  lv_account
+             INTO lw_xref-xref3.
+
+      APPEND lw_xref TO lt_xref.
+      CLEAR: lw_xref, lw_line_items, lv_docu_num,
+             lv_account.
+    ENDLOOP.
+
+*--Select entries from BSEG/VBSEGS to check if they've been
+*--posted/parked already
+    SELECT xref3
+      FROM bseg
+      APPENDING TABLE lt_dupli
+   FOR ALL ENTRIES IN lt_xref[]
+     WHERE bukrs IN s_bukrs
+       AND xref3 EQ lt_xref-xref3.
+
+    SELECT xref3
+      FROM vbsegs
+      APPENDING TABLE lt_dupli
+   FOR ALL ENTRIES IN lt_xref[]
+     WHERE bukrs IN s_bukrs
+       AND xref3 EQ lt_xref-xref3.
+
+    IF NOT lt_dupli[] IS INITIAL.
+      SORT lt_dupli.
+      CLEAR: lw_dupli.
+      LOOP AT lt_dupli INTO lw_dupli.
+        CLEAR: lv_docno, lv_accnt.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input         = lw_dupli-xref3+0(8)
+         IMPORTING
+            output        = lv_docno.
+
+        CLEAR: lv_account.
+        CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+          EXPORTING
+            input        = lw_dupli-xref3+11(8)
+         IMPORTING
+           output        = lv_accnt.
+
+        READ TABLE gt_line_items TRANSPORTING NO FIELDS
+                          WITH KEY belnr = lv_docno
+                                   buzei = lw_dupli-xref3+8(3)
+                                   hkont = lv_accnt.
+        IF sy-subrc IS INITIAL.
+          DELETE gt_line_items INDEX sy-tabix.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    CHECK NOT gt_line_items[] IS INITIAL.
+
+    SORT gt_line_items BY bukrs belnr.
+
+*--Get the text for the line items
+    SELECT bukrs
+           belnr
+           buzei
+           augbl
+           sgtxt
+           xopvw
+           hkont
+      FROM bseg
+      INTO CORRESPONDING FIELDS OF TABLE lt_bseg
+   FOR ALL ENTRIES IN gt_line_items[]
+     WHERE bukrs EQ gt_line_items-bukrs
+       AND belnr EQ gt_line_items-belnr.
+    IF sy-subrc IS INITIAL.
+      CLEAR: lw_line_items.
+      LOOP AT gt_line_items INTO lw_line_items1.
+        lv_tabix = sy-tabix.
+        CLEAR: lw_bseg.
+        READ TABLE lt_bseg INTO lw_bseg
+                       WITH KEY bukrs = lw_line_items1-bukrs
+                                belnr = lw_line_items1-belnr
+                                buzei = lw_line_items1-buzei.
+        IF sy-subrc IS INITIAL.
+          lw_line_items1-sgtxt = lw_bseg-sgtxt.
+          MODIFY gt_line_items INDEX lv_tabix
+            FROM lw_line_items1.
+        ENDIF.
+        CLEAR: lw_bseg, lw_line_items1.
+      ENDLOOP.
+    ENDIF.
+
+*--Select items from BSEG if it has been cleared
+    SELECT bukrs
+           belnr
+           buzei
+           augbl
+           dmbtr
+           sgtxt
+           xopvw
+           hkont
+           kostl
+           prctr
+      FROM bseg
+      INTO TABLE lt_bseg
+   FOR ALL ENTRIES IN gt_line_items[]
+     WHERE bukrs EQ gt_line_items-bukrs
+       AND belnr EQ gt_line_items-belnr
+       AND ( augbl NE gc_space  AND
+             augbl NE gt_line_items-belnr )
+       AND xopvw EQ gc_x.
+    IF sy-subrc IS INITIAL.
+      SELECT bukrs
+             belnr
+             buzei
+             augbl
+             dmbtr
+             sgtxt
+             xopvw
+             hkont
+             kostl
+             prctr
+        FROM bseg
+        INTO TABLE gt_bseg
+     FOR ALL ENTRIES IN lt_bseg
+       WHERE bukrs EQ lt_bseg-bukrs
+         AND belnr EQ lt_bseg-augbl
+         AND xopvw NE gc_x.
+
+      CLEAR: lw_line_items1.
+      LOOP AT gt_line_items INTO lw_line_items1.
+        lv_tabix = sy-tabix.
+        CLEAR: lw_bseg.
+        READ TABLE lt_bseg INTO lw_bseg
+                           WITH KEY bukrs = lw_line_items1-bukrs
+                                   belnr = lw_line_items1-belnr.
+        IF sy-subrc IS INITIAL.
+          lw_line_items1-augbl = lw_bseg-augbl.
+          IF lw_line_items1-hkont EQ lw_bseg-hkont.
+            lw_line_items1-clear = gc_x.
+          ENDIF.
+          MODIFY gt_line_items INDEX lv_tabix
+            FROM lw_line_items1.
+          CLEAR: lw_line_items1.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+  ENDSELECT.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPREPARE_ALV_OUTPUT_100
+*&---------------------------------------------------------------------*
+*       ALV Output
+*----------------------------------------------------------------------*
+FORM zprepare_alv_output_100.
+
+  DATA: lt_exclude TYPE ui_functions,
+        lw_layout  TYPE lvc_s_layo,
+        lv_valid   TYPE c,
+        lv_stable  TYPE lvc_s_stbl.
+
+  DATA: lc_custom_container TYPE REF TO cl_gui_custom_container.
+
+  CLEAR: g_grid.
+
+  CREATE OBJECT lc_custom_container
+         EXPORTING container_name = gc_container.
+
+  CREATE OBJECT g_grid
+         EXPORTING i_parent = lc_custom_container.
+
+  IF sy-ucomm NE gc_back.
+
+    PERFORM zupdate_prew_data.
+
+    PERFORM zbuild_fieldcat
+                     USING:text-020 text-019 text-001 space space space,
+                           text-021 text-019 text-010 space space space,
+                           text-045 text-019 text-046 space space space,
+                           text-022 text-019 text-011 space space space,
+                           text-023 text-019 text-012 space space space,
+                           text-024 text-019 text-013 space space space,
+                           text-025 text-019 text-002 space space space,
+                           text-026 text-019 text-014 space space space,
+                           text-027 text-019 text-015 space space space,
+                           text-028 text-019 text-016 gc_x space space,
+                           text-029 text-019 text-017 gc_x space space,
+                           text-048 text-019 text-049 gc_x space space,
+                           text-030 text-019 text-018 gc_x space space.
+
+    PERFORM zexclude_tb_functions CHANGING lt_exclude.
+
+    lw_layout-stylefname = gc_cell.
+    lw_layout-cwidth_opt = gc_x.
+
+    SORT gt_final BY docu_num line_item
+                     gl_accnt
+                     prft_cent amount.
+
+    CALL METHOD g_grid->set_table_for_first_display
+         EXPORTING it_toolbar_excluding  = lt_exclude
+                   is_layout             = lw_layout
+         CHANGING  it_fieldcatalog       = gt_fieldcat
+                   it_outtab             = gt_final[].
+
+* Set editable cells to ready for input initially
+    CALL METHOD g_grid->set_ready_for_input
+     EXPORTING
+      i_ready_for_input = 1.
+
+  ELSE.
+
+*    call method g_grid->refresh_table_display.
+*            EXPORTING is_stable = lv_stable.
+
+*    CALL METHOD g_grid->check_changed_data
+*            IMPORTING e_valid = lv_valid.
+    CALL METHOD g_grid->refresh_table_display.
+
+    CALL METHOD g_grid->set_table_for_first_display
+         EXPORTING it_toolbar_excluding  = lt_exclude
+                   is_layout             = lw_layout
+         CHANGING  it_fieldcatalog       = gt_fieldcat
+                   it_outtab             = gt_final[].
+
+
+*--Set editable cells to ready for input initially
+    CALL METHOD g_grid->set_ready_for_input
+     EXPORTING
+      i_ready_for_input = 1.
+
+  ENDIF.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZBUILD_FIELDCAT
+*&---------------------------------------------------------------------*
+*       Build the field catalog
+*----------------------------------------------------------------------*
+FORM zbuild_fieldcat  CHANGING p_text1
+                               p_text2
+                               p_text3
+                               p_text4
+                               p_text5
+                               p_text6.
+
+  DATA:lw_fieldcat TYPE lvc_s_fcat. "lvc_t_fcat.
+
+  CLEAR: lw_fieldcat.
+
+  lw_fieldcat-fieldname  = p_text1. "Field Name
+  lw_fieldcat-tabname    = p_text2. "Table Name
+  lw_fieldcat-reptext    = p_text3. "Heading
+  lw_fieldcat-edit       = p_text4. "Edit field
+  lw_fieldcat-hotspot    = p_text5. "Hotspot
+  lw_fieldcat-icon       = p_text6. "Icon
+
+  IF lw_fieldcat-fieldname EQ 'COMP_CODE' OR
+     lw_fieldcat-fieldname EQ 'POST_DATE' OR
+     lw_fieldcat-fieldname EQ 'DOCU_NUM'  OR
+     lw_fieldcat-fieldname EQ 'LINE_ITEM' OR
+     lw_fieldcat-fieldname EQ 'FIS_YEAR'  OR
+     lw_fieldcat-fieldname EQ 'DOC_TEXT'.
+    lw_fieldcat-auto_value = gc_x. "Auto populate value
+  ENDIF.
+
+  APPEND lw_fieldcat TO gt_fieldcat.
+  CLEAR: lw_fieldcat.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZEXCLUDE_TB_FUNCTIONS
+*&---------------------------------------------------------------------*
+*       Exclude TB Functions
+*----------------------------------------------------------------------*
+FORM zexclude_tb_functions  CHANGING pt_exclude TYPE ui_functions.
+
+  DATA: lw_exclude TYPE ui_func,
+        lv_status  TYPE string.
+
+  GET PF-STATUS lv_status.
+
+  IF lv_status NE 'MAIN100'.
+
+    CLEAR: lw_exclude.
+    lw_exclude = cl_gui_alv_grid=>mc_fc_loc_insert_row.
+    APPEND lw_exclude TO pt_exclude.
+
+    CLEAR: lw_exclude.
+    lw_exclude = cl_gui_alv_grid=>mc_fc_loc_undo.
+    APPEND lw_exclude TO pt_exclude.
+
+    CLEAR: lw_exclude.
+    lw_exclude = cl_gui_alv_grid=>mc_fc_loc_copy_row.
+    APPEND lw_exclude TO pt_exclude.
+    CLEAR: lw_exclude.
+
+    CLEAR: lw_exclude.
+    lw_exclude = cl_gui_alv_grid=>mc_fc_loc_append_row.
+    APPEND lw_exclude TO pt_exclude.
+
+    CLEAR: lw_exclude.
+    lw_exclude = cl_gui_alv_grid=>mc_fc_loc_delete_row.
+    APPEND lw_exclude TO pt_exclude.
+    CLEAR: lw_exclude.
+
+  ENDIF.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZUPDATE_PREW_DATA
+*&---------------------------------------------------------------------*
+*       Update the final table
+*----------------------------------------------------------------------*
+FORM zupdate_prew_data.
+
+  DATA: lt_celltab     TYPE lvc_t_styl,
+        lw_line_items  TYPE ty_line_items1,
+        lw_line_items1 TYPE ty_line_items1,
+        lw_final       TYPE ty_final,
+        lv_amount      TYPE dmbtr,
+        lt_bseg        TYPE TABLE OF ty_bseg,
+        lw_bseg1       TYPE ty_bseg,
+        lw_bseg2       TYPE ty_bseg.
+
+  CLEAR: lw_line_items.
+  SORT gt_line_items BY belnr clear DESCENDING.
+  LOOP AT gt_line_items INTO lw_line_items
+                       WHERE clear NE gc_x.
+
+    CLEAR: lw_bseg1.
+    READ TABLE gt_bseg INTO lw_bseg1
+                   WITH KEY bukrs = lw_line_items-bukrs
+                            belnr = lw_line_items-augbl."belnr.
+    IF sy-subrc IS INITIAL.
+      CLEAR: lw_bseg2.
+      REFRESH: lt_bseg.
+      lt_bseg[] = gt_bseg[].
+      DELETE lt_bseg WHERE augbl NE lw_bseg1-augbl.
+      DELETE lt_bseg WHERE belnr NE lw_bseg1-belnr.
+
+      IF NOT lt_bseg[] IS INITIAL.
+        LOOP AT lt_bseg INTO lw_bseg2.
+          lw_final-comp_code = lw_bseg2-bukrs.
+          lw_final-post_date = lw_line_items-budat.
+          lw_final-fis_year  = lw_line_items-gjahr.
+          lw_final-docu_num  = lw_line_items-belnr.
+          lw_final-line_item = lw_line_items-buzei.
+          lw_final-doc_text  = lw_line_items-sgtxt.
+          lw_final-gl_accnt  = lw_line_items-hkont.
+          lw_final-prft_cent = lw_line_items-prctr.
+          lw_final-amount    = lw_line_items-dmbtr.
+          lw_final-prop_acct = lw_bseg2-hkont.
+          lw_final-prop_pc   = lw_bseg2-prctr.
+          lw_final-prop_cc   = lw_bseg2-kostl.
+          IF lw_line_items-dmbtr LT 0.
+            lw_final-prop_amt  = lw_bseg2-dmbtr * -1.
+          ELSE.
+            lw_final-prop_amt  = lw_bseg2-dmbtr.
+          ENDIF.
+
+
+          REFRESH: lt_celltab[].
+          PERFORM zfill_celltab CHANGING lt_celltab.
+          INSERT LINES OF lt_celltab INTO TABLE lw_final-celltab.
+
+          APPEND lw_final TO gt_final.
+          CLEAR: lw_final.
+
+        ENDLOOP.
+      ELSE.
+        CLEAR: lw_final.
+        lw_final-comp_code = lw_line_items-bukrs.
+        lw_final-post_date = lw_line_items-budat.
+        lw_final-fis_year  = lw_line_items-gjahr.
+        lw_final-docu_num  = lw_line_items-belnr.
+        lw_final-line_item = lw_line_items-buzei.
+        lw_final-doc_text  = lw_line_items-sgtxt.
+        lw_final-gl_accnt  = lw_line_items-hkont.
+        lw_final-prft_cent = lw_line_items-prctr.
+        lw_final-amount    = lw_line_items-dmbtr.
+        lw_final-prop_acct = lw_line_items-hkont.
+        lw_final-prop_amt  = lw_line_items-dmbtr.
+
+        REFRESH: lt_celltab[].
+        PERFORM zfill_celltab CHANGING lt_celltab.
+        INSERT LINES OF lt_celltab INTO TABLE lw_final-celltab.
+
+        APPEND lw_final TO gt_final.
+        CLEAR: lw_final.
+      ENDIF.
+
+    ELSE.
+      CLEAR: lw_final.
+      lw_final-comp_code = lw_line_items-bukrs.
+      lw_final-post_date = lw_line_items-budat.
+      lw_final-fis_year  = lw_line_items-gjahr.
+      lw_final-docu_num  = lw_line_items-belnr.
+      lw_final-line_item = lw_line_items-buzei.
+      lw_final-doc_text  = lw_line_items-sgtxt.
+      lw_final-gl_accnt  = lw_line_items-hkont.
+      lw_final-prft_cent = lw_line_items-prctr.
+      lw_final-amount    = lw_line_items-dmbtr.
+      lw_final-prop_acct = lw_line_items-hkont.
+      lw_final-prop_amt  = lw_line_items-dmbtr.
+
+      REFRESH: lt_celltab[].
+      PERFORM zfill_celltab CHANGING lt_celltab.
+      INSERT LINES OF lt_celltab INTO TABLE lw_final-celltab.
+
+      APPEND lw_final TO gt_final.
+      CLEAR: lw_final.
+    ENDIF.
+
+  ENDLOOP.
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZFILL_CELLTAB
+*&---------------------------------------------------------------------*
+*       Fill Celltab(for editable/uneditable fields)
+*----------------------------------------------------------------------*
+FORM zfill_celltab  CHANGING pt_celltab TYPE lvc_t_styl.
+
+  DATA: lw_celltab TYPE lvc_s_styl.
+
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'COMP_CODE'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'POST_DATE'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'DOCU_NUM'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'LINE_ITEM'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'DOC_TEXT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'GL_ACCNT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'PRFT_CENT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'AMOUNT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_disabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'PROP_ACCT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_enabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'PROP_PC'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_enabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'PROP_CC'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_enabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+  lw_celltab-fieldname = 'PROP_AMT'.
+  lw_celltab-style = cl_gui_alv_grid=>mc_style_enabled.
+  INSERT lw_celltab INTO TABLE pt_celltab.
+  CLEAR: lw_celltab.
+
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Module  PBO_100  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pbo_100 OUTPUT.
+
+  SET PF-STATUS 'MAIN100'.
+  SET TITLEBAR 'MAIN100'.
+
+  IF g_custom_container IS INITIAL.
+    PERFORM zprepare_alv_output_100.
+  ENDIF.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  PAI_100  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pai_100 INPUT.
+
+  DATA: lv_ok TYPE sy-ucomm.
+
+  lv_ok = ok_code.
+
+  CLEAR ok_code.
+
+  CASE lv_ok.
+    WHEN 'SAVE'.
+*      perform save_data.
+    WHEN 'BACK'.
+      LEAVE TO SCREEN 0.
+    WHEN 'EXIT'.
+      LEAVE PROGRAM.
+    WHEN 'PREWJRNL'.
+      PERFORM zpreview_park_journal.
+    WHEN OTHERS.
+*--do nothing
+  ENDCASE.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  ZPARK_JOURNAL_ENTRIES
+*&---------------------------------------------------------------------*
+*       Check for changed data and park the journal
+*----------------------------------------------------------------------*
+FORM zpark_journal_entries .
+
+  DATA: lv_valid TYPE c,
+        lw_final TYPE ty_final,
+        lt_final TYPE TABLE OF ty_final.
+
+*--Check if the journal entries have been changed and park it
+  CALL METHOD g_grid->check_changed_data
+             IMPORTING e_valid = lv_valid.
+
+  PERFORM zprepare_filefor_park.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPREVIEW_PARK_JOURNAL
+*&---------------------------------------------------------------------*
+*       Preview Parked Journal
+*----------------------------------------------------------------------*
+FORM zpreview_park_journal .
+
+  DATA: lv_valid TYPE c,
+        lw_final TYPE ty_final,
+        lt_final TYPE TABLE OF ty_final,
+        lw_stable TYPE lvc_s_stbl,
+        lv_ref   TYPE REF TO cl_gui_alv_grid.
+
+  DATA: lc_custom_container TYPE REF TO cl_gui_custom_container.
+
+  REFRESH: gt_final1[].
+
+  lt_final[] = gt_final[].
+
+*  CALL METHOD g_grid->refresh_table_display.
+
+*--Check if the journal entries have been changed and park it
+  CALL METHOD g_grid->check_changed_data
+             IMPORTING e_valid = lv_valid.
+
+  CALL METHOD g_grid->refresh_table_display.
+
+  MOVE-CORRESPONDING gt_final[] TO gt_final1[].
+
+  SORT gt_final1 BY docu_num  line_item
+                    gl_accnt
+                    prft_cent amount.
+
+  CLEAR: g_grid.
+
+  CALL SCREEN 200.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Module  PBO_200  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pbo_200 OUTPUT.
+
+  SET PF-STATUS 'MAIN200'.
+  SET TITLEBAR  'MAIN200'.
+
+  IF gv_custom_container IS INITIAL.
+    PERFORM zprepare_alv_output_200.
+  ENDIF.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Module  PAI_200  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pai_200 INPUT.
+
+  DATA: lv_ok1   TYPE sy-ucomm.
+
+  lv_ok1 = ok_code1.
+
+  CLEAR ok_code1.
+
+  CASE lv_ok1.
+    WHEN 'SAVE'.
+*      perform save_data.
+    WHEN 'BACK'.
+*      g_grid->free( ).
+*      CLEAR: g_grid.
+      LEAVE TO SCREEN 100.
+    WHEN 'EXIT'.
+      LEAVE PROGRAM.
+    WHEN 'PARKJRNL'.
+      PERFORM zpark_journal_entries.
+    WHEN OTHERS.
+*--do nothing
+  ENDCASE.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  ZPREPARE_ALV_OUTPUT_200
+*&---------------------------------------------------------------------*
+*       Prepare final output screen
+*----------------------------------------------------------------------*
+FORM zprepare_alv_output_200 .
+
+  DATA: lt_exclude TYPE ui_functions,
+        lw_layout TYPE lvc_s_layo.
+
+  DATA: lc_custom_container TYPE REF TO cl_gui_custom_container.
+
+  REFRESH: gt_fieldcat.
+
+  REFRESH: gt_park[].
+
+  CREATE OBJECT lc_custom_container
+         EXPORTING container_name = gc_container1.
+
+  CREATE OBJECT g_grid
+         EXPORTING i_parent = lc_custom_container.
+
+  PERFORM zupdate_park_data.
+
+  PERFORM zbuild_fieldcat
+                    USING:text-020 text-031 text-001 space space space,
+                          text-021 text-031 text-010 space space space,
+                          text-036 text-031 text-032 space space space,
+                          text-045 text-031 text-046 space space space,
+                          text-022 text-031 text-011 space space space,
+                          text-023 text-031 text-012 space space space,
+                          text-024 text-031 text-013 space space space,
+                          text-037 text-031 text-033 space space space,
+                          text-025 text-031 text-002 space space space,
+                          text-026 text-031 text-014 space space space,
+                          text-027 text-031 text-015 space space space,
+                          text-038 text-031 text-034 space space space,
+                          text-039 text-031 text-035 space space space,
+                          text-028 text-031 text-016 space space space,
+                          text-029 text-031 text-017 space space space,
+                          text-048 text-031 text-049 space space space,
+                          text-030 text-031 text-018 space space space.
+
+  PERFORM zexclude_tb_functions CHANGING lt_exclude.
+
+  lw_layout-stylefname = gc_cell.
+  lw_layout-cwidth_opt = gc_x.
+
+  SORT gt_park BY docu_num line_item
+                    gl_accnt
+                    prft_cent amount.
+
+  CALL METHOD g_grid->set_table_for_first_display
+       EXPORTING it_toolbar_excluding  = lt_exclude
+                 is_layout             = lw_layout
+       CHANGING  it_fieldcatalog       = gt_fieldcat
+                 it_outtab             = gt_park[].
+
+* Set editable cells to ready for input initially
+  CALL METHOD g_grid->set_ready_for_input
+   EXPORTING
+    i_ready_for_input = 1.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZUPDATE_PARK_DATA
+*&---------------------------------------------------------------------*
+*       Update the data to be parked
+*----------------------------------------------------------------------*
+FORM zupdate_park_data.
+
+  DATA: lw_final    TYPE ty_final,
+        lv_fiscalyr TYPE char4,
+        lw_park     TYPE ty_park.
+
+  CLEAR: lw_final.
+  LOOP AT gt_final1 INTO lw_final.
+
+*--Company Code
+    gw_park-comp_code = lw_final-comp_code.
+
+*--Posting Date
+    gw_park-post_date = lw_final-post_date.
+
+*--Fiscal year
+    gw_park-fis_year = lw_final-fis_year.
+
+*--Document Date
+    gw_park-docu_date = sy-datum.
+
+*--Document Number
+    gw_park-docu_num  = lw_final-docu_num.
+
+*--Line Item
+    gw_park-line_item = lw_final-line_item.
+
+*--Docuemnt Header Text
+    gw_park-doc_text = lw_final-doc_text.
+
+*--Document Type
+    gw_park-docu_type = gv_docty.
+
+*--GL Account
+    gw_park-gl_accnt = lw_final-gl_accnt.
+
+*--Profit Centre
+    gw_park-prft_cent = lw_final-prft_cent.
+
+*--Amount
+    IF NOT ( lw_final-prop_acct IS INITIAL OR
+             lw_final-prop_pc IS INITIAL ).
+      CLEAR: gw_park-amount.
+    ENDIF.
+
+    IF NOT lw_final-prop_amt IS INITIAL.
+*      gw_park-amount = lw_final-amount - lw_final-prop_amt.
+      CLEAR: gw_park-amount.
+    ENDIF.
+
+    lw_park = gw_park.
+
+*--Proposed GL Account
+    IF lw_final-prop_acct IS INITIAL.
+      gw_park-prop_acct = lw_final-gl_accnt.
+    ELSE.
+      gw_park-prop_acct = lw_final-prop_acct.
+    ENDIF.
+
+    lw_park-prop_acct = lw_final-gl_accnt.
+
+*--Tax Code
+    PERFORM zget_tax_code USING gw_park-prop_acct
+                       CHANGING gw_park-tax_code.
+
+    PERFORM zget_tax_code USING lw_park-prop_acct
+                       CHANGING lw_park-tax_code.
+
+*--Proposed Profit Centre
+    gw_park-prop_pc = lw_final-prop_pc.
+    lw_park-prop_pc = lw_final-prft_cent.
+
+*--Proposed Cost Centre
+    gw_park-prop_cc = lw_final-prop_cc.
+    lw_park-prop_cc = lw_final-prop_cc.
+
+*--Proposed Amount
+    IF NOT lw_final-prop_amt IS INITIAL.
+      gw_park-prop_amt = lw_final-prop_amt.
+      lw_park-prop_amt = lw_final-prop_amt * -1.
+    ELSE.
+      gw_park-prop_amt = lw_final-amount.
+      lw_park-prop_amt = lw_final-amount * -1.
+    ENDIF.
+
+*--Posting Key
+    IF gw_park-prop_amt > 0.
+      gw_park-post_key = 40.
+    ELSE.
+      gw_park-post_key = 50.
+    ENDIF.
+    IF lw_park-prop_amt > 0.
+      lw_park-post_key = 40.
+    ELSE.
+      lw_park-post_key = 50.
+    ENDIF.
+
+    IF NOT ( gw_park-prop_pc IS INITIAL OR
+             lw_park-prop_pc IS INITIAL ).
+      APPEND gw_park TO gt_park.
+      APPEND lw_park TO gt_park.
+      CLEAR: gw_park, lw_park.
+    ELSE.
+
+      CLEAR: gw_park, lw_park.
+    ENDIF.
+
+  ENDLOOP.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPREPARE_FILEFOR_PARK
+*&---------------------------------------------------------------------*
+*       Prepare file for PARK
+*----------------------------------------------------------------------*
+FORM zprepare_filefor_park .
+
+  DATA: lv_valid TYPE c,
+        lv_txn       TYPE i,
+        lv_count     TYPE posnr_acc VALUE 1,
+        lv_lineitem  TYPE char3,
+        lv_docu_num  TYPE char8,
+        lv_account   TYPE char10.
+
+*--Loop at the entries to park the document
+  CLEAR: gw_park, lv_docu_num.
+  LOOP AT gt_park INTO gw_park.
+
+*--Document Header
+    gw_documentheader-obj_type   = 'BKPFF'.
+*    CONCATENATE gw_park-docu_num
+*                gw_park-fis_year
+*                gw_park-comp_code
+*           INTO gw_documentheader-obj_key.
+    gw_documentheader-obj_sys    = sy-sysid.
+    gw_documentheader-username   = sy-uname.
+    gw_documentheader-header_txt = gw_park-doc_text.
+    gw_documentheader-comp_code  = gw_park-comp_code.
+    gw_documentheader-doc_date   = p_docdt. "gw_park-docu_date.
+    gw_documentheader-pstng_date = p_posdt. "gw_park-post_date.
+    gw_documentheader-doc_type   = gw_park-docu_type.
+    gw_documentheader-ref_doc_no = gw_park-docu_num.
+
+*--Currency Amount
+    gw_currencyamount-itemno_acc   = lv_count. "gw_park-line_item.
+    gw_currencyamount-currency     = gc_aud.
+    gw_currencyamount-currency_iso = gc_aud.
+    gw_currencyamount-amt_doccur   = gw_park-prop_amt.
+    gw_currencyamount-amt_base     = gw_park-prop_amt.
+    APPEND  gw_currencyamount TO  gt_currencyamount.
+    CLEAR: gw_currencyamount.
+
+*--Account GL
+    gw_accountgl-itemno_acc  = lv_count. "gw_park-line_item. "
+    gw_accountgl-comp_code   = gw_park-comp_code.
+    gw_accountgl-gl_account  = gw_park-prop_acct.
+    gw_accountgl-profit_ctr  = gw_park-prop_pc.
+    gw_accountgl-costcenter  = gw_park-prop_cc.
+
+*--Reference Key 3
+    CLEAR: lv_lineitem.
+    lv_lineitem = gw_park-line_item.
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+      EXPORTING
+        input        = lv_lineitem
+      IMPORTING
+        output       = lv_lineitem.
+
+
+    CLEAR: lv_docu_num.
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input        = gw_park-docu_num
+     IMPORTING
+       output        = lv_docu_num.
+
+    CLEAR: lv_account.
+    lv_account = gw_park-gl_accnt.
+    CALL FUNCTION 'CONVERSION_EXIT_ALPHA_OUTPUT'
+      EXPORTING
+        input        = lv_account
+      IMPORTING
+        output       = lv_account.
+
+    CONCATENATE lv_docu_num lv_lineitem lv_account
+           INTO gw_accountgl-ref_key_3.
+
+    gw_accountgl-tax_code = gw_park-tax_code.
+    APPEND gw_accountgl TO gt_accountgl.
+    CLEAR: gw_accountgl.
+
+    lv_count = lv_count + 1.
+
+    MOVE-CORRESPONDING gw_park TO gw_parked.
+    APPEND gw_parked TO gt_parked.
+
+    AT END OF docu_num.
+      PERFORM zpark_documents.
+    ENDAT.
+
+  ENDLOOP.
+
+  CLEAR: g_grid.
+
+  CALL SCREEN 300.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZPARK_DOCUMENTS
+*&---------------------------------------------------------------------*
+*       Park the documents
+*----------------------------------------------------------------------*
+FORM zpark_documents .
+
+  DATA: lt_extension TYPE TABLE OF bapiparex,
+        lw_extension TYPE bapiparex,
+        lv_object    TYPE bapiache02-obj_key,
+        lw_parked    TYPE ty_parked,
+        lw_messages  TYPE ty_messages,
+        lv_tabix     TYPE sy-tabix,
+        lv_return    TYPE i,
+        lv_line1     TYPE flag,
+        lv_docno     TYPE docnr.
+
+  lw_extension-structure  = 'ACCIT'.
+  lw_extension-valuepart3 = 'X'.
+
+  APPEND lw_extension TO lt_extension.
+  CLEAR: lw_extension.
+
+  REFRESH:gt_return.
+  CALL FUNCTION 'BAPI_ACC_DOCUMENT_CHECK'
+    EXPORTING
+      documentheader = gw_documentheader
+    TABLES
+      accountgl      = gt_accountgl
+      currencyamount = gt_currencyamount
+      extension2     = lt_extension
+      return         = gt_return.
+
+  CLEAR:gw_return.
+  CLEAR: lw_parked, lv_tabix.
+  READ TABLE gt_parked INTO lw_parked
+                   WITH KEY docu_num = gw_documentheader-ref_doc_no.
+  IF sy-subrc IS INITIAL.
+    lv_tabix = sy-tabix.
+    lv_docno = lw_parked-docu_num.
+  ENDIF.
+  LOOP AT gt_return INTO gw_return.
+    IF lv_line1 EQ space.
+      IF gw_return-type EQ gc_e.
+*        lw_parked-msg_type   = gw_return-type.
+        lw_parked-message    = '@09@'.
+        lw_parked-message_v2 = gw_return-message_v2.
+        gv_errflg = abap_true.
+        lv_line1 = abap_true.
+      ELSEIF gw_return-type EQ gc_s.
+        lw_parked-doc_no     = gw_return-message_v2+0(10).
+        lw_parked-message_v2 = gw_return-message_v2.
+        lw_parked-message    = '@08@'.
+        lv_line1 = abap_true.
+      ELSEIF gw_return-type EQ 'I'.
+*        lw_parked-msg_type   = gw_return-type.
+        lw_parked-message    = '@0A@'.
+        lw_parked-message_v2 = gw_return-message_v2.
+        lv_line1 = abap_true.
+      ENDIF.
+      MODIFY gt_parked INDEX lv_tabix FROM lw_parked.
+      CLEAR: lw_parked.
+*      EXIT.
+    ENDIF.
+
+    lw_messages-docu_num = lv_docno.
+    lw_messages-message  = gw_return-message.
+    lw_messages-time     = sy-uzeit.
+    APPEND lw_messages TO gt_messages.
+    CLEAR: lw_messages.
+
+  ENDLOOP.
+
+  IF gv_errflg IS INITIAL.
+
+    REFRESH: lt_extension, gt_return.
+    CLEAR: lv_line1.
+
+    gw_documentheader-doc_status = '2'.
+
+    lw_extension-structure  = 'ACCIT'.
+    lw_extension-valuepart3 = 'X'.
+
+    APPEND lw_extension TO lt_extension.
+    CLEAR: lw_extension.
+
+    REFRESH: gt_return.
+    CALL FUNCTION 'BAPI_ACC_DOCUMENT_POST'
+      EXPORTING
+        documentheader = gw_documentheader
+      TABLES
+        accountgl      = gt_accountgl
+        currencyamount = gt_currencyamount
+        extension2     = lt_extension
+        return         = gt_return.
+
+    CLEAR:gw_return.
+    CLEAR: lw_parked, lv_tabix.
+    READ TABLE gt_parked INTO lw_parked
+                     WITH KEY docu_num = gw_documentheader-ref_doc_no.
+    IF sy-subrc IS INITIAL.
+      lv_tabix = sy-tabix.
+    ENDIF.
+    LOOP AT gt_return INTO gw_return.
+      IF lv_line1 EQ space.
+        IF gw_return-type EQ gc_e.
+*      lw_parked-msg_type   = gw_return-type.
+          lw_parked-message    = '@09@'. "gw_return-message.
+          lw_parked-message_v2 = gw_return-message_v2.
+          gv_errflg = abap_true.
+          lv_line1 = abap_true.
+        ELSEIF gw_return-type EQ gc_s.
+          lw_parked-doc_no     = gw_return-message_v2+0(10).
+          lw_parked-message_v2 = gw_return-message_v2.
+          lw_parked-message    = '@08@'. "text-003.
+          lv_line1 = abap_true.
+        ELSEIF gw_return-type EQ 'I'.
+*      lw_parked-msg_type   = gw_return-type.
+          lw_parked-message    = '@0A@'. "gw_return-message.
+*      lw_parked-message_v2 = gw_return-message_v2.
+          lv_line1 = abap_true.
+        ENDIF.
+        MODIFY gt_parked INDEX lv_tabix FROM lw_parked.
+        CLEAR: lw_parked.
+*        EXIT.
+      ENDIF.
+
+      lw_messages-docu_num = lv_docno.
+      lw_messages-message  = gw_return-message.
+      lw_messages-time     = sy-uzeit.
+      APPEND lw_messages TO gt_messages.
+      CLEAR: lw_messages.
+
+    ENDLOOP.
+
+    REFRESH:gt_accountgl, gt_currencyamount,
+            gt_accounttax, lt_extension.
+    CLEAR:gw_documentheader.
+
+*If there are no errors post the document
+    CALL FUNCTION 'BAPI_TRANSACTION_COMMIT'.
+
+  ELSE.
+
+    REFRESH:gt_accountgl, gt_currencyamount,
+            gt_accounttax, lt_extension, gt_return.
+
+    CLEAR:gw_documentheader.
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Module  PBO_300  OUTPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pbo_300 OUTPUT.
+
+  SET PF-STATUS 'MAIN300'.
+  SET TITLEBAR  'MAIN300'.
+
+  IF gv_custom_cont IS INITIAL.
+    PERFORM zprepare_alv_output_300.
+  ENDIF.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  ZPREPARE_ALV_OUTPUT_300
+*&---------------------------------------------------------------------*
+*       Final ALV Output
+*----------------------------------------------------------------------*
+FORM zprepare_alv_output_300 .
+
+  DATA: lt_exclude TYPE ui_functions,
+        lw_layout  TYPE lvc_s_layo.
+
+  DATA: lc_custom_container TYPE REF TO cl_gui_custom_container.
+
+  REFRESH: gt_fieldcat.
+
+  CREATE OBJECT lc_custom_container
+         EXPORTING container_name = gc_container2.
+
+  CREATE OBJECT g_grid
+         EXPORTING i_parent = lc_custom_container.
+
+* Create Object to handle hotpsot.
+  CREATE OBJECT g_verifier.
+  SET HANDLER   g_verifier->hotspot_click FOR g_grid.
+
+  PERFORM zbuild_fieldcat
+                    USING:text-020 text-044 text-001 space space space,
+                          text-021 text-044 text-010 space space space,
+                          text-036 text-044 text-032 space space space,
+                          text-045 text-044 text-046 space space space,
+                          text-022 text-044 text-011 space space space,
+                          text-023 text-044 text-012 space space space,
+                          text-024 text-044 text-013 space space space,
+                          text-037 text-044 text-033 space space space,
+                          text-025 text-044 text-002 space space space,
+                          text-026 text-044 text-014 space space space,
+                          text-027 text-044 text-015 space space space,
+                          text-038 text-044 text-034 space space space,
+                          text-039 text-044 text-035 space space space,
+                          text-028 text-044 text-016 space space space,
+                          text-029 text-044 text-017 space space space,
+                          text-048 text-044 text-049 space space space,
+                          text-030 text-044 text-018 space space space,
+                          text-047 text-044 text-011 space gc_x  space,
+                          text-041 text-044 text-043 space gc_x  gc_x.
+
+  lw_layout-cwidth_opt = gc_x.
+
+  PERFORM zexclude_tb_functions CHANGING lt_exclude.
+
+  CALL METHOD g_grid->set_table_for_first_display
+    EXPORTING it_toolbar_excluding  = lt_exclude
+              is_layout             = lw_layout
+     CHANGING it_fieldcatalog       = gt_fieldcat
+              it_outtab             = gt_parked[].
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Module  PAI_300  INPUT
+*&---------------------------------------------------------------------*
+*       text
+*----------------------------------------------------------------------*
+MODULE pai_300 INPUT.
+
+  DATA: lv_ok2    TYPE sy-ucomm,
+        lw_row_no TYPE lvc_s_roid,
+        lw_parked TYPE ty_parked,
+        lv_gjahr  TYPE gjahr,
+        lv_bukrs  TYPE bukrs.
+
+  lv_ok2 = ok_code2.
+
+  CLEAR ok_code2.
+
+  CASE lv_ok2.
+    WHEN 'SAVE'.
+*      perform save_data.
+    WHEN 'BACK'.
+      LEAVE PROGRAM.
+    WHEN 'EXIT'.
+      LEAVE PROGRAM.
+    WHEN OTHERS.
+*--do nothing
+  ENDCASE.
+
+ENDMODULE.
+*&---------------------------------------------------------------------*
+*&      Form  ZEVENT_HOTSPOT_CLICK
+*&---------------------------------------------------------------------*
+*       Hotspot Event click
+*----------------------------------------------------------------------*
+FORM zevent_hotspot_click  USING    p_row    TYPE lvc_s_row
+                                    p_column TYPE lvc_s_col.
+
+  DATA: lv_valid    TYPE c,
+        lw_messages TYPE ty_messages,
+        lw_txwnote  TYPE txw_note,
+        lt_txwnote  TYPE TABLE OF txw_note.
+
+  CLEAR: lw_parked.
+  READ TABLE gt_parked INTO lw_parked
+                      INDEX p_row-index.
+  IF sy-subrc IS INITIAL AND
+     p_column = 'DOC_NO'.
+
+    SET PARAMETER ID 'BLN' FIELD lw_parked-message_v2+0(10).
+
+    lv_bukrs = lw_parked-message_v2+10(4).
+    lv_gjahr = lw_parked-message_v2+14(4).
+
+    SET PARAMETER ID 'BUK' FIELD lv_bukrs.
+
+    SET PARAMETER ID 'GJR' FIELD lv_gjahr.
+
+    CALL TRANSACTION 'FB03' AND SKIP FIRST SCREEN.
+
+  ELSEIF p_column = 'MESSAGE'.
+
+    SORT gt_messages BY time DESCENDING.
+    CLEAR: lw_messages.
+    LOOP AT gt_messages INTO lw_messages
+                       WHERE docu_num = lw_parked-docu_num.
+
+      lw_txwnote-line = lw_messages-message.
+      APPEND lw_txwnote TO lt_txwnote.
+      CLEAR: lw_txwnote.
+
+    ENDLOOP.
+
+    CALL FUNCTION 'TXW_TEXTNOTE_EDIT'
+     EXPORTING
+       edit_mode       = ' '
+     TABLES
+       t_txwnote       = lt_txwnote.
+
+  ENDIF.
+
+ENDFORM.
+*&---------------------------------------------------------------------*
+*&      Form  ZGET_TAX_CODE
+*&---------------------------------------------------------------------*
+*       Fetch the tax code based on the GL account
+*----------------------------------------------------------------------*
+FORM zget_tax_code  USING    p_acct
+                    CHANGING p_taxcode.
+
+  DATA: lv_account TYPE saknr.
+
+*--Get Tax Code
+  CALL FUNCTION 'CONVERSION_EXIT_ALPHA_INPUT'
+    EXPORTING
+      input         = p_acct
+    IMPORTING
+      output        = lv_account.
+
+  SELECT SINGLE *
+    INTO @DATA(lw_skb1)
+    FROM skb1
+   WHERE bukrs EQ @gw_park-comp_code
+     AND saknr EQ @lv_account.
+
+  IF sy-subrc EQ 0.
+    CASE lw_skb1-mwskz.
+      WHEN '<'.
+        p_taxcode = 'PZ'.
+      WHEN '>'.
+        p_taxcode = 'SZ'.
+      WHEN OTHERS.
+
+    ENDCASE.
+  ENDIF.
+
+ENDFORM.
